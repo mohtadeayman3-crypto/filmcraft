@@ -374,6 +374,29 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
             ],
             false,
         ),
+        ("lumetri", vec![("look", ch(1)), ("look_intensity", fl(80.0))], false),
+        ("lumetri", vec![("look", ch(2)), ("look_intensity", fl(65.0))], false),
+        ("lumetri", vec![("look", ch(3)), ("look_intensity", fl(100.0))], false),
+        ("lumetri", vec![("look", ch(4)), ("look_intensity", fl(90.0))], false),
+        ("lumetri", vec![("look", ch(5)), ("look_intensity", fl(75.0))], false),
+        ("lumetri", vec![("look", ch(6)), ("look_intensity", fl(100.0))], false),
+        ("lumetri", vec![("look", ch(7)), ("look_intensity", fl(85.0))], false),
+        ("lumetri", vec![("look", ch(8)), ("look_intensity", fl(70.0))], false),
+        ("lumetri", vec![("sharpen", fl(40.0))], false),
+        ("lumetri", vec![("sharpen", fl(-50.0))], false),
+        (
+            "lumetri",
+            vec![
+                ("temperature", fl(12.0)),
+                ("exposure", fl(0.2)),
+                ("look", ch(1)),
+                ("look_intensity", fl(70.0)),
+                ("sharpen", fl(30.0)),
+                ("wheel_shadows", pt(-0.25, 0.2)),
+                ("curve_luma", ParamValue::Curve(vec![[0.0, 0.03], [0.5, 0.54], [1.0, 0.97]])),
+            ],
+            false,
+        ),
     ]
 }
 
@@ -550,6 +573,8 @@ fn hostile_parameters_are_bounded() {
         effect("lumetri", &[("wheel_midtones_l", fl(f64::INFINITY))]),
         effect("lumetri", &[("curve_luma", ParamValue::Curve(vec![[0.0, f32::NAN], [1.0, 1.0]]))]),
         effect("lumetri", &[("hue_vs_sat", ParamValue::Curve(vec![[f32::INFINITY, 0.5]]))]),
+        effect("lumetri", &[("look_intensity", fl(f64::NAN))]),
+        effect("lumetri", &[("sharpen", fl(f64::INFINITY))]),
     ];
     for e in &nan {
         let op = FxOp::eval(e, &cx(Tick::ZERO, 1.0), w, h);
@@ -591,15 +616,15 @@ fn hostile_parameters_are_bounded() {
 #[test]
 fn lumetri_unsupported_sections_fall_back() {
     let (w, h) = (40usize, 24usize);
-    // sharpen > 0 and input LUT (explicitly required by brief)
+    // sharpen > 0 and input LUT: input_lut falls back to CPU
     let e = effect("lumetri", &[("sharpen", fl(10.0)), ("input_lut", ParamValue::Text("custom.cube".into()))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()), "sharpen > 0 and input_lut must fall back to CPU");
+    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()), "input_lut must fall back to CPU");
 
-    // sharpen alone
+    // sharpen alone is GPU-capable (C1.4)
     let e = effect("lumetri", &[("sharpen", fl(20.0))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(FxOp::gpu_ok));
 
     // input_lut alone
     let e = effect("lumetri", &[("input_lut", ParamValue::Text("test.cube".into()))]);
@@ -611,10 +636,10 @@ fn lumetri_unsupported_sections_fall_back() {
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
     assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
 
-    // look > 0
+    // look > 0 is GPU-capable (C1.4)
     let e = effect("lumetri", &[("look", ch(1))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(FxOp::gpu_ok));
 
     // curve_luma and hue_vs_sat are GPU-capable (C1.3)
     let e = effect("lumetri", &[("curve_luma", ParamValue::Curve(vec![[0.0, 0.1], [1.0, 0.9]]))]);

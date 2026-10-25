@@ -1563,6 +1563,10 @@ mod lumetri_cpu_parity_tests {
                     ("sat_vs_sat", ParamValue::Curve(vec![[0.0, 0.5], [0.5, 0.65], [1.0, 0.35]])),
                 ],
             ),
+            ("look_1", vec![("look", ParamValue::Choice(1)), ("look_intensity", fl(75.0))]),
+            ("look_4", vec![("look", ParamValue::Choice(4)), ("look_intensity", fl(100.0))]),
+            ("look_6_and_sharpen", vec![("look", ParamValue::Choice(6)), ("look_intensity", fl(80.0)), ("sharpen", fl(35.0))]),
+            ("negative_sharpen", vec![("sharpen", fl(-45.0))]),
         ];
 
         let (w, h) = (67usize, 41usize);

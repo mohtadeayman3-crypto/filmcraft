@@ -231,14 +231,14 @@ fn steps(op: &FxOp) -> Vec<Step> {
                 gs_p2,
             ];
             out.push(step(OP_LUMETRI, [l.creative_on as u32, l.vignette_on as u32, gs_mode, 0], &p));
-            if l.wheels_on || l.curve_mask != 0 {
+            if l.look > 0 || l.wheels_on || l.curve_mask != 0 {
                 let (adv_mode, adv_white, adv_p2) = match l.adv_gs {
                     filmcraft_color::GradeSpace::Sdr => (0u32, 0.0f32, 0.0f32),
                     filmcraft_color::GradeSpace::Pq { white, norm } => (1u32, white, norm),
                     filmcraft_color::GradeSpace::Hlg { white, gamma } => (2u32, white, gamma),
                 };
                 let adv_p = [
-                    1.0,
+                    l.look_k,
                     adv_white,
                     adv_p2,
                     0.0,
@@ -254,11 +254,22 @@ fn steps(op: &FxOp) -> Vec<Step> {
                     l.wheel_hi[1],
                     l.wheel_hi[2],
                 ];
-                let mut adv = step(OP_LUMETRI_ADV, [0, l.wheels_on as u32, l.curve_mask, adv_mode], &adv_p);
+                let mut adv = step(OP_LUMETRI_ADV, [l.look, l.wheels_on as u32, l.curve_mask, adv_mode], &adv_p);
                 if l.curve_mask != 0 {
                     adv.lut = Some(l.curves.clone());
                 }
                 out.push(adv);
+            }
+            if l.sharpen_amount.abs() > 1e-3 {
+                let start = out.len();
+                boxes(&l.sharpen_rx, false, true, &mut out);
+                boxes(&l.sharpen_ry, true, true, &mut out);
+                for s in &mut out[start..] {
+                    s.unsharp_blur = true;
+                }
+                let mut s = step(OP_UNSHARP, [0; 4], &[l.sharpen_amount, 0.0]);
+                s.combine = true;
+                out.push(s);
             }
         }
     }

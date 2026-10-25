@@ -209,6 +209,11 @@ pub struct LumetriOp {
     pub wheel_hi: [f32; 3],
     pub curve_mask: u32,
     pub curves: [Option<Vec<f32>>; 9],
+    pub look: u32,
+    pub look_k: f32,
+    pub sharpen_rx: Vec<u32>,
+    pub sharpen_ry: Vec<u32>,
+    pub sharpen_amount: f32,
     pub gpu_capable: bool,
 }
 
@@ -524,7 +529,13 @@ impl FxOp {
                 let has_input_lut = basic_on && !text(e, "input_lut").is_empty();
                 let has_look_lut = creative_on && !text(e, "look_lut").is_empty();
                 let look = if creative_on && !has_look_lut { choice(e, "look") } else { 0 };
+                let look_k = f(e, "look_intensity", cx) / 100.0;
                 let sharpen = if creative_on { f(e, "sharpen", cx) / 100.0 } else { 0.0 };
+                let px_scale_ok = cx.px_scale.is_finite();
+                let sharpen_r = 1.2 * if px_scale_ok { cx.px_scale.max(0.35) } else { 0.35 };
+                let (sharpen_rx, sharpen_ry) =
+                    if sharpen.is_finite() && sharpen.abs() > 1e-3 { gaussian_boxes(w, h, sharpen_r, sharpen_r) } else { (Vec::new(), Vec::new()) };
+                let sharpen_amount = if sharpen.is_finite() && sharpen.abs() > 1e-3 { sharpen.max(-1.0) } else { sharpen };
 
                 let curves_on = on(e, "curves_on");
                 let curve_ids =
@@ -563,7 +574,7 @@ impl FxOp {
 
                 let hsl_on = b(e, "hsl_on");
 
-                let gpu_capable = !has_input_lut && !has_look_lut && look == 0 && sharpen.abs() <= 1e-3 && !hsl_on && wheels_finite && curves_finite;
+                let gpu_capable = !has_input_lut && !has_look_lut && !hsl_on && wheels_finite && curves_finite && px_scale_ok;
 
                 let bf = |id: &str| if basic_on { f(e, id, cx) } else { 0.0 };
                 let specular = if is_hdr { bf("hdr_specular") / 100.0 } else { 0.0 };
@@ -616,6 +627,11 @@ impl FxOp {
                     wheel_hi,
                     curve_mask,
                     curves,
+                    look,
+                    look_k,
+                    sharpen_rx,
+                    sharpen_ry,
+                    sharpen_amount,
                     gpu_capable,
                 }))
             }
@@ -682,6 +698,7 @@ impl FxOp {
                     && fin(&l.wheel_mid)
                     && fin(&l.wheel_hi)
                     && l.curves.iter().flatten().all(|c| c.len() == 1024 && fin(c))
+                    && fin(&[l.look_k, l.sharpen_amount])
             }
         }
     }
@@ -1066,10 +1083,10 @@ impl FxOp {
                     }
                     basic_gs.decode(v)
                 });
-                if l.wheels_on || l.curve_mask != 0 {
-                    use crate::effects::within_unit;
-                    let (adv_gs, wheels_on, wheel_sh, wheel_mid, wheel_hi, curve_mask) =
-                        (l.adv_gs, l.wheels_on, l.wheel_sh, l.wheel_mid, l.wheel_hi, l.curve_mask);
+                if l.look > 0 || l.wheels_on || l.curve_mask != 0 {
+                    use crate::effects::{apply_look, within_unit};
+                    let (adv_gs, look, look_k, wheels_on, wheel_sh, wheel_mid, wheel_hi, curve_mask) =
+                        (l.adv_gs, l.look, l.look_k, l.wheels_on, l.wheel_sh, l.wheel_mid, l.wheel_hi, l.curve_mask);
                     let adv_hdr = adv_gs.is_hdr();
                     let [luma_c, red_c, green_c, blue_c, hvs, hvh, hvl, lvs, svs] = &l.curves;
                     let sample = |lut: &[f32], x: f32| -> f32 {
@@ -1087,6 +1104,10 @@ impl FxOp {
                     };
                     img.map_rgb(|c, _, _| {
                         let mut v = adv_gs.encode(c);
+                        if look > 0 {
+                            let lk = if adv_hdr { within_unit(v, true, |u| apply_look(look, u)) } else { apply_look(look, v) };
+                            v = [v[0] + (lk[0] - v[0]) * look_k, v[1] + (lk[1] - v[1]) * look_k, v[2] + (lk[2] - v[2]) * look_k];
+                        }
                         if wheels_on {
                             let luma = (0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]).clamp(0.0, 1.0);
                             let wsh = (1.0 - luma).powi(2);
@@ -1136,6 +1157,9 @@ impl FxOp {
                         }
                         adv_gs.decode(v)
                     });
+                }
+                if l.sharpen_amount.abs() > 1e-3 {
+                    crate::effects::unsharp_boxes(img, &l.sharpen_rx, &l.sharpen_ry, l.sharpen_amount, 0.0);
                 }
             }
         }

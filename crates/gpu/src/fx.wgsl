@@ -644,15 +644,75 @@ fn sample_curve(row: i32, x: f32, hdr: bool) -> f32 {
     return li + (lj - li) * (p - f32(i));
 }
 
+fn look_s_curve(v: f32, k: f32) -> f32 {
+    let x = clamp(v, 0.0, 1.0);
+    return x + (x * x * (3.0 - 2.0 * x) - x) * k;
+}
+
+fn look_s_curve3(c: vec3<f32>, k: f32) -> vec3<f32> {
+    return vec3(look_s_curve(c.x, k), look_s_curve(c.y, k), look_s_curve(c.z, k));
+}
+
+fn apply_look_wgsl(look: u32, c: vec3<f32>) -> vec3<f32> {
+    let l = luma709(c);
+    let lv = vec3(l);
+    switch look {
+        case 1u: {
+            let shadow = vec3(0.0, 0.08, 0.1);
+            let high = vec3(0.1, 0.04, -0.06);
+            return look_s_curve3(c + shadow * (1.0 - l) + high * l, 0.35);
+        }
+        case 2u: {
+            let w = vec3(c.x * 1.06 + 0.02, c.y * 1.0 + 0.01, c.z * 0.9);
+            let m = w + (lv - w) * 0.15;
+            return m * 0.94 + vec3(0.04);
+        }
+        case 3u: {
+            return look_s_curve3(vec3(c.x * 0.9, c.y * 0.98, c.z * 1.1 + 0.02), 0.2);
+        }
+        case 4u: {
+            return look_s_curve3(c + (lv - c) * 0.55, 0.6);
+        }
+        case 5u: {
+            let m = c + (lv - c) * 0.25;
+            return vec3(0.08) + m * 0.84;
+        }
+        case 6u: {
+            return look_s_curve3(lv, 0.3);
+        }
+        case 7u: {
+            return look_s_curve3(vec3(c.x * 1.1 + 0.03, c.y * 1.02 + 0.01, c.z * 0.82), 0.15);
+        }
+        case 8u: {
+            return vec3(c.x * 0.75, c.y * 0.85, c.z * 1.15) * 0.8;
+        }
+        default: {
+            return c;
+        }
+    }
+}
+
 fn lumetri_adv_op(c: vec3<f32>) -> vec3<f32> {
+    let look = u.i1.x;
     let wheels_on = u.i1.y != 0u;
     let curve_mask = u.i1.z;
     let gs_mode = u.i1.w;
     let hdr = gs_mode != 0u;
+    let look_k = u.p0.x;
     let gs_white = u.p0.y;
     let gs_p2 = u.p0.z;
 
     var v = gs_encode(c, gs_mode, gs_white, gs_p2);
+    if look > 0u {
+        var lk: vec3<f32>;
+        if hdr {
+            let m = max(max(max(v.x, v.y), v.z), 1.0);
+            lk = apply_look_wgsl(look, max(v / m, vec3(0.0))) * m;
+        } else {
+            lk = apply_look_wgsl(look, v);
+        }
+        v = v + (lk - v) * look_k;
+    }
     if wheels_on {
         let l = clamp(luma709(v), 0.0, 1.0);
         let om = 1.0 - l;
