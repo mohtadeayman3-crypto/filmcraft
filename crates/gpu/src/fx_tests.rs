@@ -566,12 +566,77 @@ fn lumetri_unsupported_sections_fall_back() {
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
     assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
 
-    // HDR working space
+    // HDR working space is GPU-capable for basic correction
     let e = effect("lumetri", &[]);
     let mut cx_hdr = cx(Tick::ZERO, 1.0);
     cx_hdr.working = filmcraft_color::WorkingSpace::Rec2100Pq;
     let op = FxOp::eval(&e, &cx_hdr, w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(FxOp::gpu_ok));
+}
+
+#[test]
+fn gpu_lumetri_hdr_basic_correction_matches_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (67u32, 41u32);
+    // Include HDR specular values up to ~20x reference white (4060 nits)
+    let mut px = picture(w, h);
+    for (i, p) in px.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        if i % 5 == 0 && p[3] > 0.0 {
+            let boost = 1.0 + (i % 19) as f32;
+            p[0] = half(p[0] * boost);
+            p[1] = half(p[1] * boost);
+            p[2] = half(p[2] * boost);
+        }
+    }
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    for working in [filmcraft_color::WorkingSpace::Rec2100Pq, filmcraft_color::WorkingSpace::Rec2100Hlg] {
+        let mut cx_hdr = cx(Tick::ZERO, 1.0);
+        cx_hdr.working = working;
+        for params in [
+            vec![
+                ("temperature", fl(18.0)),
+                ("tint", fl(-12.0)),
+                ("exposure", fl(0.75)),
+                ("contrast", fl(35.0)),
+                ("highlights", fl(-25.0)),
+                ("shadows", fl(20.0)),
+                ("whites", fl(30.0)),
+                ("blacks", fl(-10.0)),
+                ("saturation", fl(115.0)),
+                ("hdr_white", fl(1000.0)),
+                ("hdr_specular", fl(40.0)),
+            ],
+            vec![
+                ("exposure", fl(-0.5)),
+                ("contrast", fl(-30.0)),
+                ("whites", fl(80.0)),
+                ("hdr_white", fl(2000.0)),
+                ("hdr_specular", fl(-80.0)),
+                ("vignette_amount", fl(-2.5)),
+            ],
+        ] {
+            let e = effect("lumetri", &params);
+            let op = FxOp::eval(&e, &cx_hdr, w as usize, h as usize).expect("hdr lumetri op");
+            assert!(op.gpu_ok(), "{working:?} {params:?}: expected gpu_ok");
+            let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+            op.apply(&mut cpu);
+            let fx = LayerFx { size: (w, h), decimation: 1, ops: vec![op] };
+            let (_, _, gpu) = c.effect_image(&frame, &fx).expect("hdr effect image");
+            let (worst, flips) = compare(&cpu.px, &gpu);
+            eprintln!("HDR {working:?}: max rel diff {worst:.2e}, flips {flips:.4}");
+            // Note on HDR PQ tolerance: ST 2084 PQ round-trip (`pq_inv_eotf1` -> grade -> `pq_eotf1`)
+            // raises intermediates to `m2 = 78.84375` and `1 / m1 = 6.277395`. Because GPU hardware
+            // evaluates `pow(x, y)` via `exp2(y * log2(x))`, a 1-2 ULP difference in `log2`/`exp2` is
+            // amplified by `m2 / m1` (~495x), giving a measured max relative diff of `2.22e-4` in
+            // Rec2100Pq (with `flips == 0.0`), whereas Rec2100Hlg stays within `EXACT` (`1e-4`).
+            let tol = if working == filmcraft_color::WorkingSpace::Rec2100Pq { 3e-4 } else { EXACT };
+            assert!(worst <= tol && flips == 0.0, "HDR {working:?} {params:?}: {worst:.2e} > {tol:.2e}, flips {flips}");
+        }
+    }
 }
 
 /// Layers with effect chains in a composited plan — YUV and RGBA sources, a decimated working

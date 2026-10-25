@@ -473,3 +473,13 @@ Because `filmcraft-render` is in L3 and `filmcraft-gpu` depends on `filmcraft-re
 
 1. **Benchmark Location (Phase 3):** Because `filmcraft-gpu` depends on `filmcraft-render` (`gpu → render` in `cargo xtask layers`), `crates/render` cannot depend on `filmcraft-gpu`. Should we add the GPU + end-to-end benchmark as `crates/gpu/examples/lumetri_bench.rs` (keeping `crates/render/examples/lumetri_bench.rs` or moving it to `crates/gpu/examples/lumetri_bench.rs` so one binary runs both CPU and GPU benchmarks side-by-side)?
 2. **External `.cube` / `.3dl` LUTs (`input_lut`, `look_lut`):** The existing test `lumetri_unsupported_sections_fall_back` in `crates/gpu/src/fx_tests.rs:520` explicitly asserts that `input_lut` and `look_lut` fall back to the CPU (`!op.gpu_ok()`), and C1's 6 commits (`C1.1`–`C1.6`) cover Basic, Wheels, Curves, Creative Looks, HSL Secondary, and Vignette. Confirming: should external `.cube`/`.3dl` file LUTs remain on the CPU fallback in C1?
+
+### 7.3 Approved Design Decisions & Future `C1.7: external LUTs on the GPU`
+
+- **Approved Answers:**
+  1. The extended CPU + GPU + end-to-end + playback + scopes benchmark will live in `crates/gpu/examples/lumetri_bench.rs`, keeping `crates/render/examples/lumetri_bench.rs` untouched.
+  2. External `.cube` / `.3dl` file LUTs (`input_lut`, `look_lut`) remain on the CPU fallback for `C1.1`–`C1.6`, preserving the fallback assertions in `lumetri_unsupported_sections_fall_back`.
+
+- **`C1.7: external LUTs on the GPU` (Future Post-C1.6 Follow-up, Not Implemented in C1):**
+  - [`crates/gpu/src/lut.rs`](../crates/gpu/src/lut.rs) (`GpuLut`) and [`crates/gpu/src/lut.wgsl`](../crates/gpu/src/lut.wgsl) already implement 3D LUT evaluation with tetrahedral interpolation on the GPU, tested for parity against `filmcraft_color::Lut3d::apply`.
+  - After `C1.6`, `FxOp::Lumetri` can optionally hold `Arc<filmcraft_color::Lut3d>` references resolved in `FxOp::eval` via `crate::luts::resolve(cx.project, ...)`, and `FxStage` can dispatch tetrahedral 3D LUT passes before `OP_LUMETRI` (`input_lut`) and at the start of `OP_LUMETRI_ADV` (`look_lut`) with `within_unit` HDR scaling.

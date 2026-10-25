@@ -186,36 +186,20 @@ fn steps(op: &FxOp) -> Vec<Step> {
         FxOp::VideoLimiter { max, comp, axis, warn, warning_color } => {
             out.push(step(OP_VIDEO_LIMITER, [*axis, *warn as u32, 0, 0], &[*max, *comp, warning_color[0], warning_color[1], warning_color[2]]));
         }
-        FxOp::Lumetri {
-            gains,
-            exposure,
-            contrast,
-            hl,
-            sh,
-            wh,
-            bl,
-            sat,
-            creative_on,
-            faded,
-            vib,
-            st,
-            ht,
-            vignette_on,
-            va,
-            vmid,
-            vround,
-            vfeather,
-            aspect,
-            ..
-        } => {
-            let ge = [gains[0] * exposure, gains[1] * exposure, gains[2] * exposure];
-            let b0 = -bl * 0.15;
-            let w0 = 1.0 - wh * 0.15;
-            let sh_k = sh * 0.35;
-            let hl_k = hl * 0.35;
-            let vround_aspect = filmcraft_render::gpufx::lumetri_vignette_aspect(*aspect, *vround);
-            let st_k = [(st[0] - 0.5) * 0.3, (st[1] - 0.5) * 0.3, (st[2] - 0.5) * 0.3];
-            let ht_k = [(ht[0] - 0.5) * 0.3, (ht[1] - 0.5) * 0.3, (ht[2] - 0.5) * 0.3];
+        FxOp::Lumetri(l) => {
+            let (gs_mode, gs_white, gs_p2) = match l.basic_gs {
+                filmcraft_color::GradeSpace::Sdr => (0u32, 0.0f32, 0.0f32),
+                filmcraft_color::GradeSpace::Pq { white, norm } => (1u32, white, norm),
+                filmcraft_color::GradeSpace::Hlg { white, gamma } => (2u32, white, gamma),
+            };
+            let ge = [l.gains[0] * l.exposure, l.gains[1] * l.exposure, l.gains[2] * l.exposure];
+            let b0 = -l.bl * 0.15;
+            let w0 = 1.0 - l.wh * 0.15;
+            let sh_k = l.sh * 0.35;
+            let hl_k = l.hl * 0.35;
+            let vround_aspect = filmcraft_render::gpufx::lumetri_vignette_aspect(l.aspect, l.vround);
+            let st_k = [(l.st[0] - 0.5) * 0.3, (l.st[1] - 0.5) * 0.3, (l.st[2] - 0.5) * 0.3];
+            let ht_k = [(l.ht[0] - 0.5) * 0.3, (l.ht[1] - 0.5) * 0.3, (l.ht[2] - 0.5) * 0.3];
 
             let p = [
                 ge[0],
@@ -225,25 +209,25 @@ fn steps(op: &FxOp) -> Vec<Step> {
                 w0,
                 sh_k,
                 hl_k,
-                *contrast,
-                *faded,
-                *sat,
-                *vib,
-                *va,
-                *vmid,
-                *vfeather,
+                l.contrast,
+                l.faded,
+                l.sat,
+                l.vib,
+                l.va,
+                l.vmid,
+                l.vfeather,
                 vround_aspect,
-                0.0,
+                l.specular,
                 st_k[0],
                 st_k[1],
                 st_k[2],
-                0.0,
+                gs_white,
                 ht_k[0],
                 ht_k[1],
                 ht_k[2],
-                0.0,
+                gs_p2,
             ];
-            out.push(step(OP_LUMETRI, [*creative_on as u32, *vignette_on as u32, 0, 0], &p));
+            out.push(step(OP_LUMETRI, [l.creative_on as u32, l.vignette_on as u32, gs_mode, 0], &p));
         }
     }
     out
