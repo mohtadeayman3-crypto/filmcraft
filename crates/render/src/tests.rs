@@ -521,3 +521,62 @@ fn a_reversed_clip_shows_exactly_its_source_range() {
     let all: Vec<i64> = (0..20).flat_map(|f| shown(&p, f, false)).collect();
     assert_eq!(all, (10..=29).rev().collect::<Vec<_>>());
 }
+
+#[test]
+fn log_clip_schedules_gpu_fx_while_frame_blending_stays_on_cpu() {
+    let (mut p, _red, ocean, seq, map) = setup();
+    let clip = place(&mut p, seq, 0, ocean, 0, 48);
+    let mut lumetri = filmcraft_project::find_effect("lumetri").unwrap().instance();
+    lumetri.params.get_mut("exposure").unwrap().value = ParamValue::Float(0.4);
+    lumetri.params.get_mut("contrast").unwrap().value = ParamValue::Float(20.0);
+    lumetri.params.get_mut("look").unwrap().value = ParamValue::Choice(1);
+    lumetri.params.get_mut("look_intensity").unwrap().value = ParamValue::Float(80.0);
+    lumetri.params.get_mut("curve_luma").unwrap().value = ParamValue::Curve(vec![[0.0, 0.02], [0.5, 0.54], [1.0, 0.98]]);
+    lumetri.params.get_mut("wheel_shadows").unwrap().value = ParamValue::Vec2(filmcraft_geom::Vec2::new(-0.1, 0.1));
+    lumetri.params.get_mut("hsl_on").unwrap().value = ParamValue::Bool(true);
+    lumetri.params.get_mut("hsl_sat").unwrap().value = ParamValue::Float(120.0);
+    lumetri.params.get_mut("vignette_amount").unwrap().value = ParamValue::Float(-1.5);
+    p.sequence_mut(seq).unwrap().find_item_mut(clip).unwrap().1.effects.push(lumetri);
+
+    let r = FrameRate::FPS_24;
+    let opts = RenderOptions::default();
+
+    // 1. Non-log clip: schedules GPU LayerFx with raw YUV source frame and decimation = 4 (1280x720 -> 320x180).
+    let plan_plain = plan::plan_frame(&p, seq, r.tick_of(1), opts, &map);
+    let plan::FramePlan::Layers { layers: layers_plain, .. } = &plan_plain else { panic!("expected Layers") };
+    assert_eq!(layers_plain.len(), 1);
+    assert!(layers_plain[0].fx.is_some(), "non-log clip with Lumetri schedules GPU fx");
+    assert!(matches!(layers_plain[0].frame.data, PixelData::Rgba8(_)), "non-log clip keeps Rgba8 source frame");
+    assert_eq!(plan::execute_cpu(&plan_plain).px, render_sequence(&p, seq, r.tick_of(1), opts, &map).px);
+
+    // 2. Log clip (S-Log3 / S-Gamut3.Cine): decodes log -> linear working space first, then schedules GPU LayerFx.
+    if let Some(it) = p.item_mut(ocean)
+        && let ItemKind::Media(mc) = &mut it.kind
+    {
+        mc.interpret.color_space = Some(filmcraft_color::ColorSpace::SLog3SGamut3Cine);
+    }
+    let plan_log = plan::plan_frame(&p, seq, r.tick_of(1), opts, &map);
+    let plan::FramePlan::Layers { layers: layers_log, .. } = &plan_log else { panic!("expected Layers") };
+    assert_eq!(layers_log.len(), 1);
+    assert!(layers_log[0].fx.is_some(), "log clip with Lumetri schedules GPU fx");
+    assert!(matches!(layers_log[0].frame.data, PixelData::RgbaF32(_)), "log clip decodes input transform to linear RgbaF32 before fx");
+    assert_eq!(layers_log[0].fx.as_ref().unwrap().decimation, 1);
+    assert!(layers_log[0].input.is_none());
+    let got_log = plan::execute_cpu(&plan_log);
+    let ref_log = render_sequence(&p, seq, r.tick_of(1), opts, &map);
+    assert_eq!(got_log.px, ref_log.px, "CPU execution of log clip GPU plan matches render_sequence bit-for-bit");
+
+    // 3. Speed-changed / frame-blended clip on an in-between frame (f = 1 at 50% speed = source frame 0.5): stays on the CPU.
+    {
+        let (_, ti) = p.sequence_mut(seq).unwrap().find_item_mut(clip).unwrap();
+        ti.speed = 0.5;
+        ti.time_interpolation = filmcraft_project::TimeInterpolation::FrameBlending;
+    }
+    let plan_blend = plan::plan_frame(&p, seq, r.tick_of(1), opts, &map);
+    let plan::FramePlan::Layers { layers: layers_blend, .. } = &plan_blend else { panic!("expected Layers") };
+    assert_eq!(layers_blend.len(), 1);
+    assert!(layers_blend[0].fx.is_none(), "frame-blended in-between frame stays on the CPU path");
+    let got_blend = plan::execute_cpu(&plan_blend);
+    let ref_blend = render_sequence(&p, seq, r.tick_of(1), opts, &map);
+    assert_eq!(got_blend.px, ref_blend.px);
+}

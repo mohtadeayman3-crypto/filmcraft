@@ -8,7 +8,8 @@
 - **C1.3 (`bccae632`):** GPU Lumetri RGB & Hue/Sat Curves (`curve_luma`, `curve_red`, `curve_green`, `curve_blue`, `hue_vs_sat`, `hue_vs_hue`, `hue_vs_luma`, `luma_vs_sat`, `sat_vs_sat`) via a `1024×9` `Rgba32Float` LUT texture bound to `@binding(3)` (`aux`).
 - **C1.4 (`4479d17e`):** GPU Lumetri Creative Looks (`1..=8` procedural looks + `look_intensity`) & Creative Sharpen (`OP_BOX` + `OP_UNSHARP` reuse).
 - **C1.5 (`9f29a7e8`):** GPU Lumetri HSL Secondary with Matte Refinement (`OP_LUMETRI_HSL_KEY`, `OP_LUMETRI_HSL_DENOISE` 2D median filter, `OP_BOX` separable blur, `OP_LUMETRI_HSL_APPLY` with `hsl_show_mask` modes `0..=3`).
-- **C1.6:** GPU Lumetri Vignette extremes (`+100` circle, `-100` oval, `0` feather, positive amount), full 6-section Lumetri chain parity tests (`SDR` and `HDR`), and Phase 3 extended 4K GPU benchmark (`crates/gpu/examples/lumetri_bench.rs`, keeping `crates/render/examples/lumetri_bench.rs` untouched).
+- **C1.6 (`0ce7779c`):** GPU Lumetri Vignette extremes (`+100` circle, `-100` oval, `0` feather, positive amount), full 6-section Lumetri chain parity tests (`SDR` and `HDR`), and Phase 3 extended 4K GPU benchmark (`crates/gpu/examples/lumetri_bench.rs`, keeping `crates/render/examples/lumetri_bench.rs` untouched).
+- **C1.9:** GPU effects (`LayerFx`) for CPU-decoded log/camera clips (such as Sony `S-Log3 / S-Gamut3.Cine`) in `crates/render/src/plan.rs`.
 
 ## Parity Tolerance Notes
 
@@ -67,3 +68,29 @@ Command: `cargo run --release -p filmcraft-gpu --example lumetri_bench`
 | **Engine `scopes.read` default (`scale = 0.5` CPU render + 4 scopes)** | `1920×1080` | **89.59 ms** | 91.66 ms | 84.40 / 104.82 ms | **11.2 Hz** |
 
 - **Follow-up observation:** Two-thirds (**23.84 ms / 35.38 ms = 67%**) of a UI scopes refresh on a graded 4K clip is spent re-rendering the `960×540` frame on the CPU through `Target::Sequence`. Feeding the scopes from a downscaled GPU output readback (or a `480×270` GPU render) would eliminate the redundant CPU Lumetri pass and cut SDR scopes refresh time from **35.4 ms** to **~12 ms** (>80 Hz).
+
+## C1.9: GPU Effects (`LayerFx`) for Log / Camera Clips (`crates/render/src/plan.rs`)
+
+### What kept log clips on the CPU path before
+In `crates/render/src/plan.rs` (`push_item`), a clip entered the GPU effect stage only when `plain && !chain.is_empty()`, where:
+```rust
+let plain =
+    (input.is_some() || !crate::colorman::needs_management(pipe, cs, &frame))
+    && crate::interpolation_blend(item, t, src.info().frame_rate()).is_none();
+```
+When a clip's input colour space (`cs`) is a camera log curve (such as `ColorSpace::SLog3SGamut3Cine`), `colorman::needs_management(pipe, cs, &frame)` is `true` and `colorman::gpu_input(...)` returns `None` (because the GPU input transform shader currently handles SDR, linear, PQ, and HLG, while camera log curves are decoded by `colorman::decode` on the CPU until Task C2). Because `plain` was `false`, `push_item` skipped the GPU effect stage entirely and fell through to `crate::item_layer(...)`, running **both** the log decode **and** the entire Lumetri effect chain on the CPU (`fx: None`).
+
+### New behaviour in `C1.9`
+We split the condition in `crates/render/src/plan.rs` (`push_item`) into:
+- `no_blend = crate::interpolation_blend(item, t, src.info().frame_rate()).is_none()` (no Frame Blending / Optical Flow in-between frame).
+- `plain = (input.is_some() || !crate::colorman::needs_management(pipe, cs, &frame)) && no_blend`.
+- When `no_blend && !chain.is_empty()` and all effects in `chain` evaluate to `FxOp::gpu_ok`:
+  - **Non-log / GPU-managed clips (`plain == true`):** Unchanged (`(frame, n as u32, input)`).
+  - **Log / CPU-decoded clips (`plain == false`, `no_blend == true`):** `crate::colorman::decode(project, item.item, &frame, n, pipe)` first converts the log frame to linear working space on the CPU (matching `base_layer` / `media_image` on the CPU reference path), wraps the linear `Image` in `cpu_frame(img)` (`PixelData::RgbaF32`) with `decimation = 1` and `input = None`, and attaches `fx: Some(Arc::new(LayerFx { size: (lw as u32, lh as u32), decimation: 1, ops }))` so that the effects (including the 6-section Lumetri chain) execute on the GPU.
+  - **Speed-changed / frame-blended clips (`no_blend == false`):** Unchanged; they fall through to `crate::item_layer(...)` on the CPU.
+
+### Parity & Test Notes for `C1.9`
+- **`tests::log_clip_schedules_gpu_fx_while_frame_blending_stays_on_cpu` (`crates/render/src/tests.rs`):** Verifies that (1) a non-log clip keeps its raw source frame and `decimation`, (2) an `SLog3SGamut3Cine` clip decodes its input transform to linear `RgbaF32` before scheduling `LayerFx` on the GPU and matches `render_sequence` bit-for-bit on `execute_cpu`, and (3) a frame-blended speed-changed clip stays on the CPU (`fx.is_none()`).
+- **`fx_tests::gpu_log_clip_full_lumetri_chain_matches_cpu` (`crates/gpu/src/fx_tests.rs`):**
+  - Because `GpuCompositor` uploads `PixelData::RgbaF32` into an `Rgba16Float` (`f16`, 10-bit mantissa, half-ULP $2^{-11} \approx 4.88 \times 10^{-4}$) source texture before the `Rgba32Float` compute stage, comparing the GPU working image against the unquantized `f32` CPU decode has a measured max relative difference of `2.52e-4` (`<= 3e-4`, `flips == 0.0`), while comparing against the `f16`-quantized source matches within `EXACT = 1e-4`. On the final 8-bit composited output, `max <= 1` and `mean < 0.2`.
+- **Vulkan parallel test runner note:** Running `cargo test -p filmcraft-gpu --lib` with the default 20-thread test runner hung after 28 tests due to concurrent Vulkan `wgpu::Device` creation across 20 threads; running with `-- --test-threads=1` completes all 43 `filmcraft-gpu` unit tests cleanly in `10.59 s`.

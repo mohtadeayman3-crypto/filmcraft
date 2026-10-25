@@ -1073,3 +1073,119 @@ fn effect_source_integer_decimation_preserves_cpu_box_oracle() {
         }
     }
 }
+
+/// C1.9: A log/camera clip (S-Log3 / S-Gamut3.Cine) decodes its log-to-working-space input
+/// transform on the CPU before running the full 6-section Lumetri chain on the GPU, matching
+/// the CPU `render_sequence` reference.
+#[test]
+fn gpu_log_clip_full_lumetri_chain_matches_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let mut p = filmcraft_project::Project::new("log_c1_9");
+    let g = filmcraft_media::generators::GeneratorSource::demo(filmcraft_media::DemoScene::OceanSunset);
+    let info = filmcraft_media::MediaSource::info(&g).clone();
+    let generator = g.generator.clone();
+    let media_id = p.add_item(
+        "slog3_clip",
+        filmcraft_project::Label::Iris,
+        filmcraft_project::ItemKind::Media(filmcraft_project::MediaClip {
+            media: filmcraft_project::MediaRef::Generator(generator),
+            info,
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        }),
+        None,
+    );
+    if let Some(it) = p.item_mut(media_id)
+        && let filmcraft_project::ItemKind::Media(mc) = &mut it.kind
+    {
+        mc.interpret.color_space = Some(filmcraft_color::ColorSpace::SLog3SGamut3Cine);
+    }
+    let mut map = filmcraft_render::SourceMap::default();
+    map.0.insert(media_id, std::sync::Arc::new(g) as filmcraft_media::SharedSource);
+    let r = filmcraft_time::FrameRate::FPS_24;
+    let seq = p.new_sequence("s", filmcraft_project::SequenceSettings { width: 320, height: 180, frame_rate: r, ..Default::default() }, 1, 0, None);
+    let mut ti = p
+        .make_track_item(media_id, filmcraft_project::TrackKind::Video, Tick::ZERO, filmcraft_time::TimeRange::new(Tick::ZERO, r.tick_of(24)), r)
+        .expect("track item");
+    ti.scale_to_frame = true;
+    ti.effects.push(effect(
+        "lumetri",
+        &[
+            ("temperature", fl(15.0)),
+            ("tint", fl(-10.0)),
+            ("exposure", fl(0.5)),
+            ("contrast", fl(20.0)),
+            ("highlights", fl(-15.0)),
+            ("shadows", fl(10.0)),
+            ("whites", fl(5.0)),
+            ("blacks", fl(-5.0)),
+            ("saturation", fl(110.0)),
+            ("look", ch(1)),
+            ("look_intensity", fl(85.0)),
+            ("faded_film", fl(8.0)),
+            ("sharpen", fl(20.0)),
+            ("vibrance", fl(15.0)),
+            ("creative_sat", fl(105.0)),
+            ("curve_luma", ParamValue::Curve(vec![[0.0, 0.0], [0.25, 0.20], [0.75, 0.80], [1.0, 1.0]])),
+            ("curve_red", ParamValue::Curve(vec![[0.0, 0.0], [0.5, 0.52], [1.0, 1.0]])),
+            ("hue_vs_sat", ParamValue::Curve(vec![[0.0, 1.0], [0.33, 1.15], [0.66, 0.9], [1.0, 1.0]])),
+            ("wheel_shadows", pt(-0.05, -0.05)),
+            ("wheel_shadows_l", fl(-5.0)),
+            ("wheel_midtones", pt(0.04, 0.02)),
+            ("wheel_highlights", pt(0.05, 0.05)),
+            ("hsl_on", ParamValue::Bool(true)),
+            ("hsl_hue", fl(25.0)),
+            ("hsl_hue_range", fl(25.0)),
+            ("hsl_sat_min", fl(15.0)),
+            ("hsl_luma_min", fl(15.0)),
+            ("hsl_luma_max", fl(85.0)),
+            ("hsl_soft", fl(20.0)),
+            ("hsl_sat", fl(115.0)),
+            ("hsl_temp", fl(10.0)),
+            ("vignette_amount", fl(-1.5)),
+            ("vignette_midpoint", fl(45.0)),
+            ("vignette_roundness", fl(20.0)),
+            ("vignette_feather", fl(60.0)),
+        ],
+    ));
+    p.sequence_mut(seq).expect("seq").video_tracks[0].items.push(ti);
+
+    let opts = filmcraft_render::RenderOptions::default();
+    let t = r.tick_of(5);
+    let plan = filmcraft_render::plan::plan_frame(&p, seq, t, opts, &map);
+    let FramePlan::Layers { ref layers, .. } = plan else { panic!("expected Layers") };
+    assert_eq!(layers.len(), 1);
+    let fx = layers[0].fx.as_ref().expect("log clip must schedule GPU LayerFx");
+    // 1. Check the working f32 effect_image against the CPU reference.
+    // Because `GpuCompositor` uploads `PixelData::RgbaF32` into an `Rgba16Float` (f16, 10-bit
+    // mantissa, half-ULP 2^-11 = 4.88e-4) source texture before the `Rgba32Float` compute stage,
+    // comparing against the unquantized f32 CPU decode has a measured max rel diff of `2.52e-4`
+    // (`<= 3e-4`, `flips == 0.0`), while comparing against the f16-quantized source matches
+    // within `EXACT` (`1e-4`).
+    let cpu_fx = filmcraft_render::plan::effect_image_with(&layers[0].frame, fx, layers[0].input.as_deref());
+    let (_, _, gpu_fx) = c.effect_image(&layers[0].frame, fx).expect("gpu effect_image");
+    let (worst_raw, flips_raw) = compare(&cpu_fx.px, &gpu_fx);
+    assert!(worst_raw <= 3e-4 && flips_raw == 0.0, "log clip raw f32 working image: worst {worst_raw:.2e}, flips {flips_raw:.4}");
+    if let PixelData::RgbaF32(ref raw_px) = layers[0].frame.data {
+        let f16_frame = VideoFrame::rgba_f32(layers[0].frame.width, layers[0].frame.height, raw_px.iter().copied().map(half).collect());
+        let cpu_f16 = filmcraft_render::plan::effect_image_with(&f16_frame, fx, None);
+        let (worst_f16, flips_f16) = compare(&cpu_f16.px, &gpu_fx);
+        assert!(worst_f16 <= EXACT && flips_f16 == 0.0, "log clip f16-source working image: worst {worst_f16:.2e}, flips {flips_f16:.4}");
+    }
+
+    // 2. Check the final 8-bit composited frame against `render_sequence`
+    let cpu_seq = filmcraft_render::render_sequence(&p, seq, t, opts, &map).over_black_rgba8();
+    c.composite(&plan);
+    let (_, _, gpu_seq) = c.read_output().expect("readback");
+    let (p99, mean, max) = stats8(&cpu_seq, &gpu_seq, &vec![true; 320 * 180]);
+    assert!(max <= 1 && mean < 0.2, "log clip composited 8-bit: p99 {p99}, mean {mean:.4}, max {max}");
+}

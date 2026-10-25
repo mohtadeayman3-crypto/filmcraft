@@ -474,9 +474,10 @@ fn push_item(
         // in-between frames (Frame Blending / Optical Flow on speed-changed clips)
         let pipe = &seq.settings.color;
         let input = if crate::colorman::needs_management(pipe, cs, &frame) { crate::colorman::gpu_input(project, item.item, pipe, cs, &frame) } else { None };
-        let plain =
-            (input.is_some() || !crate::colorman::needs_management(pipe, cs, &frame)) && crate::interpolation_blend(item, t, src.info().frame_rate()).is_none();
-        if plain && !chain.is_empty() {
+
+        let no_blend = crate::interpolation_blend(item, t, src.info().frame_rate()).is_none();
+        let plain = (input.is_some() || !crate::colorman::needs_management(pipe, cs, &frame)) && no_blend;
+        if no_blend && !chain.is_empty() {
             // GPU effect stage: the working image the CPU would decode (`base_layer`), the
             // effects evaluated for it, placed as `item_layer` places it
             let n = crate::decimation(frame.width as f32, size.0 as f32 * want);
@@ -499,7 +500,13 @@ fn push_item(
                 let m = Affine::scale(opts.scale as f64, opts.scale as f64)
                     .then_apply(&motion)
                     .then_apply(&Affine::scale(1.0 / px_scale as f64, 1.0 / px_scale as f64));
-                let fx = LayerFx { size: (lw as u32, lh as u32), decimation: n as u32, ops };
+                let (frame, decimation, input) = if plain {
+                    (frame, n as u32, input)
+                } else {
+                    let img = crate::colorman::decode(project, item.item, &frame, n, pipe);
+                    (cpu_frame(img), 1, None)
+                };
+                let fx = LayerFx { size: (lw as u32, lh as u32), decimation, ops };
                 out.push(PlanLayer { frame, matrix: m, opacity: op * extra_opacity, blend: bl, fx: Some(Arc::new(fx)), input });
                 return;
             }
