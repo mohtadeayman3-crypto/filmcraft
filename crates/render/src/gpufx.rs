@@ -207,6 +207,8 @@ pub struct LumetriOp {
     pub wheel_sh: [f32; 3],
     pub wheel_mid: [f32; 3],
     pub wheel_hi: [f32; 3],
+    pub curve_mask: u32,
+    pub curves: [Option<Vec<f32>>; 9],
     pub gpu_capable: bool,
 }
 
@@ -513,7 +515,8 @@ impl FxOp {
                 FxOp::VideoLimiter { max: 1.0 + clip_level / 100.0, comp: comp_val, axis, warn, warning_color: wc }
             }
             "lumetri" => {
-                use crate::effects::{curve_param, is_identity_curve, wheel_rgb};
+                use crate::effects::{curve_lut, curve_param, hue_lut, is_identity_curve, wheel_rgb};
+                const CURVE_N: usize = 1024;
                 let (basic_on, creative_on, vignette_on) = (on(e, "basic_on"), on(e, "creative_on"), on(e, "vignette_on"));
                 let basic_gs = grade_space(e, cx, "hdr_white");
                 let adv_gs = grade_space(e, cx, "curves_hdr_range");
@@ -524,12 +527,28 @@ impl FxOp {
                 let sharpen = if creative_on { f(e, "sharpen", cx) / 100.0 } else { 0.0 };
 
                 let curves_on = on(e, "curves_on");
-                let has_curves = curves_on && {
-                    ["curve_luma", "curve_red", "curve_green", "curve_blue"].iter().any(|id| curve_param(e, id).is_some_and(|c| !is_identity_curve(&c)))
-                        || ["hue_vs_sat", "hue_vs_hue", "hue_vs_luma", "luma_vs_sat", "sat_vs_sat"]
-                            .iter()
-                            .any(|id| curve_param(e, id).is_some_and(|c| !c.is_empty()))
-                };
+                let curve_ids =
+                    ["curve_luma", "curve_red", "curve_green", "curve_blue", "hue_vs_sat", "hue_vs_hue", "hue_vs_luma", "luma_vs_sat", "sat_vs_sat"];
+                let curves_finite = curve_ids.iter().all(|id| curve_param(e, id).is_none_or(|c| c.iter().all(|p| p[0].is_finite() && p[1].is_finite())));
+                let lut = |id: &str| curve_param(e, id).filter(|c| curves_on && curves_finite && !is_identity_curve(c)).map(|c| curve_lut(&c, CURVE_N));
+                let hue = |id: &str| curve_param(e, id).filter(|_| curves_on && curves_finite).and_then(|c| hue_lut(&c, CURVE_N));
+                let curves = [
+                    lut("curve_luma"),
+                    lut("curve_red"),
+                    lut("curve_green"),
+                    lut("curve_blue"),
+                    hue("hue_vs_sat"),
+                    hue("hue_vs_hue"),
+                    hue("hue_vs_luma"),
+                    hue("luma_vs_sat"),
+                    hue("sat_vs_sat"),
+                ];
+                let mut curve_mask = 0u32;
+                for (bit, c) in curves.iter().enumerate() {
+                    if c.is_some() {
+                        curve_mask |= 1u32 << bit;
+                    }
+                }
 
                 let wheels_enabled = on(e, "wheels_on");
                 let v2 = |id: &str| e.param(id).map(|p| p.vec2_at(cx.t)).unwrap_or_default();
@@ -544,7 +563,7 @@ impl FxOp {
 
                 let hsl_on = b(e, "hsl_on");
 
-                let gpu_capable = !has_input_lut && !has_look_lut && look == 0 && sharpen.abs() <= 1e-3 && !has_curves && !hsl_on && wheels_finite;
+                let gpu_capable = !has_input_lut && !has_look_lut && look == 0 && sharpen.abs() <= 1e-3 && !hsl_on && wheels_finite && curves_finite;
 
                 let bf = |id: &str| if basic_on { f(e, id, cx) } else { 0.0 };
                 let specular = if is_hdr { bf("hdr_specular") / 100.0 } else { 0.0 };
@@ -595,6 +614,8 @@ impl FxOp {
                     wheel_sh,
                     wheel_mid,
                     wheel_hi,
+                    curve_mask,
+                    curves,
                     gpu_capable,
                 }))
             }
@@ -660,6 +681,7 @@ impl FxOp {
                     && fin(&l.wheel_sh)
                     && fin(&l.wheel_mid)
                     && fin(&l.wheel_hi)
+                    && l.curves.iter().flatten().all(|c| c.len() == 1024 && fin(c))
             }
         }
     }
@@ -1044,18 +1066,73 @@ impl FxOp {
                     }
                     basic_gs.decode(v)
                 });
-                if l.wheels_on {
-                    let (adv_gs, wheel_sh, wheel_mid, wheel_hi) = (l.adv_gs, l.wheel_sh, l.wheel_mid, l.wheel_hi);
+                if l.wheels_on || l.curve_mask != 0 {
+                    use crate::effects::within_unit;
+                    let (adv_gs, wheels_on, wheel_sh, wheel_mid, wheel_hi, curve_mask) =
+                        (l.adv_gs, l.wheels_on, l.wheel_sh, l.wheel_mid, l.wheel_hi, l.curve_mask);
+                    let adv_hdr = adv_gs.is_hdr();
+                    let [luma_c, red_c, green_c, blue_c, hvs, hvh, hvl, lvs, svs] = &l.curves;
+                    let sample = |lut: &[f32], x: f32| -> f32 {
+                        let n = lut.len();
+                        if n == 0 {
+                            return x;
+                        }
+                        if adv_hdr && x > 1.0 {
+                            return lut[n - 1] + (x - 1.0);
+                        }
+                        let p = x.clamp(0.0, 1.0) * (n - 1) as f32;
+                        let i = p as usize;
+                        let j = (i + 1).min(n - 1);
+                        lut[i] + (lut[j] - lut[i]) * (p - i as f32)
+                    };
                     img.map_rgb(|c, _, _| {
                         let mut v = adv_gs.encode(c);
-                        let luma = (0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]).clamp(0.0, 1.0);
-                        let wsh = (1.0 - luma).powi(2);
-                        let whi = luma * luma;
-                        let wmid = (1.0 - wsh - whi).max(0.0);
-                        for k in 0..3 {
-                            v[k] += wheel_sh[k] * wsh;
-                            v[k] += wheel_mid[k] * wmid;
-                            v[k] *= 1.0 + wheel_hi[k] * whi;
+                        if wheels_on {
+                            let luma = (0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]).clamp(0.0, 1.0);
+                            let wsh = (1.0 - luma).powi(2);
+                            let whi = luma * luma;
+                            let wmid = (1.0 - wsh - whi).max(0.0);
+                            for k in 0..3 {
+                                v[k] += wheel_sh[k] * wsh;
+                                v[k] += wheel_mid[k] * wmid;
+                                v[k] *= 1.0 + wheel_hi[k] * whi;
+                            }
+                        }
+                        if let Some(t) = luma_c.as_deref() {
+                            v = v.map(|q| sample(t, q));
+                        }
+                        if let Some(t) = red_c.as_deref() {
+                            v[0] = sample(t, v[0]);
+                        }
+                        if let Some(t) = green_c.as_deref() {
+                            v[1] = sample(t, v[1]);
+                        }
+                        if let Some(t) = blue_c.as_deref() {
+                            v[2] = sample(t, v[2]);
+                        }
+                        if (curve_mask & 0x1F0) != 0 {
+                            v = within_unit(v, adv_hdr, |u| {
+                                let mut h = rgb_to_hsl(u[0], u[1], u[2]);
+                                let (h0, s0, l0) = (h[0], h[1], h[2]);
+                                if let Some(t) = hvh.as_deref() {
+                                    h[0] = (h[0] + (sample(t, h0) - 0.5)).rem_euclid(1.0);
+                                }
+                                let mut sm = 1.0;
+                                if let Some(t) = hvs.as_deref() {
+                                    sm *= sample(t, h0) * 2.0;
+                                }
+                                if let Some(t) = lvs.as_deref() {
+                                    sm *= sample(t, l0) * 2.0;
+                                }
+                                if let Some(t) = svs.as_deref() {
+                                    sm *= sample(t, s0) * 2.0;
+                                }
+                                h[1] = (h[1] * sm).clamp(0.0, 1.0);
+                                if let Some(t) = hvl.as_deref() {
+                                    h[2] = (h[2] + (sample(t, h0) - 0.5) * 0.5).clamp(0.0, 1.0);
+                                }
+                                hsl_to_rgb(h[0], h[1], h[2])
+                            });
                         }
                         adv_gs.decode(v)
                     });

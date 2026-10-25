@@ -612,7 +612,7 @@ pub(crate) fn grade_space(e: &EffectInstance, cx: &FxCtx, white_id: &str) -> Gra
 /// into 0…1 first and back afterwards, so operations defined on 0…1 (LUTs, HSL) keep the
 /// highlights instead of clipping them. SDR signals are clamped as before.
 #[inline]
-fn within_unit(v: [f32; 3], hdr: bool, f: impl Fn([f32; 3]) -> [f32; 3]) -> [f32; 3] {
+pub(crate) fn within_unit(v: [f32; 3], hdr: bool, f: impl Fn([f32; 3]) -> [f32; 3]) -> [f32; 3] {
     if !hdr {
         return f(v.map(|q| q.clamp(0.0, 1.0)));
     }
@@ -1044,7 +1044,7 @@ pub fn curve_lut(points: &[[f32; 2]], n: usize) -> Vec<f32> {
             if x >= pts[m - 1][0] {
                 return pts[m - 1][1];
             }
-            let i = pts.partition_point(|p| p[0] <= x) - 1;
+            let i = pts.partition_point(|p| p[0] <= x).saturating_sub(1);
             let hh = pts[i + 1][0] - pts[i][0];
             let u = (x - pts[i][0]) / hh;
             let (h00, h10, h01, h11) = (2.0 * u * u * u - 3.0 * u * u + 1.0, u * u * u - 2.0 * u * u + u, -2.0 * u * u * u + 3.0 * u * u, u * u * u - u * u);
@@ -1054,7 +1054,7 @@ pub fn curve_lut(points: &[[f32; 2]], n: usize) -> Vec<f32> {
 }
 
 /// Periodic (hue) curve: points around the colour wheel, neutral 0.5 where there are none.
-fn hue_lut(points: &[[f32; 2]], n: usize) -> Option<Vec<f32>> {
+pub(crate) fn hue_lut(points: &[[f32; 2]], n: usize) -> Option<Vec<f32>> {
     if points.is_empty() {
         return None;
     }
@@ -1542,6 +1542,25 @@ mod lumetri_cpu_parity_tests {
                     ("wheel_shadows", ParamValue::Vec2(Vec2::new(0.3, -0.2))),
                     ("wheel_midtones_l", fl(15.0)),
                     ("wheel_highlights", ParamValue::Vec2(Vec2::new(-0.25, 0.35))),
+                ],
+            ),
+            (
+                "rgb_curves",
+                vec![
+                    ("curve_luma", ParamValue::Curve(vec![[0.0, 0.05], [0.25, 0.18], [0.75, 0.85], [1.0, 0.96]])),
+                    ("curve_red", ParamValue::Curve(vec![[0.0, 0.0], [0.5, 0.58], [1.0, 1.0]])),
+                    ("curve_green", ParamValue::Curve(vec![[0.0, 0.02], [0.5, 0.47], [1.0, 0.98]])),
+                    ("curve_blue", ParamValue::Curve(vec![[0.0, 0.04], [0.5, 0.44], [1.0, 0.94]])),
+                ],
+            ),
+            (
+                "hue_sat_curves",
+                vec![
+                    ("hue_vs_sat", ParamValue::Curve(vec![[0.0, 0.7], [0.33, 0.3], [0.66, 0.6]])),
+                    ("hue_vs_hue", ParamValue::Curve(vec![[0.1, 0.58], [0.6, 0.42]])),
+                    ("hue_vs_luma", ParamValue::Curve(vec![[0.2, 0.65], [0.8, 0.35]])),
+                    ("luma_vs_sat", ParamValue::Curve(vec![[0.0, 0.2], [0.5, 0.6], [1.0, 0.3]])),
+                    ("sat_vs_sat", ParamValue::Curve(vec![[0.0, 0.5], [0.5, 0.65], [1.0, 0.35]])),
                 ],
             ),
         ];

@@ -335,6 +335,45 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
             ],
             false,
         ),
+        (
+            "lumetri",
+            vec![
+                ("basic_on", ParamValue::Bool(false)),
+                ("creative_on", ParamValue::Bool(false)),
+                ("vignette_on", ParamValue::Bool(false)),
+                ("curve_luma", ParamValue::Curve(vec![[0.0, 0.04], [0.25, 0.18], [0.75, 0.86], [1.0, 0.96]])),
+                ("curve_red", ParamValue::Curve(vec![[0.0, 0.0], [0.5, 0.58], [1.0, 1.0]])),
+                ("curve_green", ParamValue::Curve(vec![[0.0, 0.02], [0.5, 0.47], [1.0, 0.98]])),
+                ("curve_blue", ParamValue::Curve(vec![[0.0, 0.04], [0.5, 0.44], [1.0, 0.94]])),
+            ],
+            false,
+        ),
+        (
+            "lumetri",
+            vec![
+                ("basic_on", ParamValue::Bool(false)),
+                ("creative_on", ParamValue::Bool(false)),
+                ("vignette_on", ParamValue::Bool(false)),
+                ("hue_vs_sat", ParamValue::Curve(vec![[0.0, 0.7], [0.33, 0.3], [0.66, 0.6]])),
+                ("hue_vs_hue", ParamValue::Curve(vec![[0.1, 0.58], [0.6, 0.42]])),
+                ("hue_vs_luma", ParamValue::Curve(vec![[0.2, 0.65], [0.8, 0.35]])),
+                ("luma_vs_sat", ParamValue::Curve(vec![[0.0, 0.2], [0.5, 0.6], [1.0, 0.3]])),
+                ("sat_vs_sat", ParamValue::Curve(vec![[0.0, 0.5], [0.5, 0.65], [1.0, 0.35]])),
+            ],
+            false,
+        ),
+        (
+            "lumetri",
+            vec![
+                ("exposure", fl(0.25)),
+                ("wheel_shadows", pt(-0.2, 0.2)),
+                ("wheel_highlights_l", fl(15.0)),
+                ("curve_luma", ParamValue::Curve(vec![[0.0, 0.02], [0.3, 0.22], [0.7, 0.8], [1.0, 0.98]])),
+                ("hue_vs_sat", ParamValue::Curve(vec![[0.0, 0.65], [0.5, 0.35]])),
+                ("luma_vs_sat", ParamValue::Curve(vec![[0.0, 0.2], [0.5, 0.6], [1.0, 0.3]])),
+            ],
+            false,
+        ),
     ]
 }
 
@@ -509,6 +548,8 @@ fn hostile_parameters_are_bounded() {
         effect("lumetri", &[("vignette_amount", fl(f64::NAN))]),
         effect("lumetri", &[("wheel_shadows", pt(f64::NAN, 0.0))]),
         effect("lumetri", &[("wheel_midtones_l", fl(f64::INFINITY))]),
+        effect("lumetri", &[("curve_luma", ParamValue::Curve(vec![[0.0, f32::NAN], [1.0, 1.0]]))]),
+        effect("lumetri", &[("hue_vs_sat", ParamValue::Curve(vec![[f32::INFINITY, 0.5]]))]),
     ];
     for e in &nan {
         let op = FxOp::eval(e, &cx(Tick::ZERO, 1.0), w, h);
@@ -575,15 +616,14 @@ fn lumetri_unsupported_sections_fall_back() {
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
     assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
 
-    // curve_luma modified
+    // curve_luma and hue_vs_sat are GPU-capable (C1.3)
     let e = effect("lumetri", &[("curve_luma", ParamValue::Curve(vec![[0.0, 0.1], [1.0, 0.9]]))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(FxOp::gpu_ok));
 
-    // hue_vs_sat non-empty
     let e = effect("lumetri", &[("hue_vs_sat", ParamValue::Curve(vec![[0.5, 0.5]]))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(FxOp::gpu_ok));
 
     // wheel offset and lightness are GPU-capable (C1.2)
     let e = effect("lumetri", &[("wheel_shadows", pt(0.5, 0.0))]);
@@ -650,6 +690,10 @@ fn gpu_lumetri_hdr_basic_correction_matches_cpu() {
                 ("hdr_white", fl(2000.0)),
                 ("hdr_specular", fl(-80.0)),
                 ("vignette_amount", fl(-2.5)),
+                ("wheel_shadows", pt(0.25, -0.2)),
+                ("curve_luma", ParamValue::Curve(vec![[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]])),
+                ("hue_vs_sat", ParamValue::Curve(vec![[0.0, 0.6], [0.5, 0.4]])),
+                ("curves_hdr_range", fl(1500.0)),
             ],
         ] {
             let e = effect("lumetri", &params);

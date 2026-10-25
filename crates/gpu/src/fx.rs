@@ -94,6 +94,8 @@ struct Step {
     combine: bool,
     /// A blur pass of Unsharp Mask (the original stays untouched until the combine).
     unsharp_blur: bool,
+    /// Optional 1024×9 curve LUT table bound to `@binding(3)` (`aux`) during `OP_LUMETRI_ADV`.
+    lut: Option<[Option<Vec<f32>>; 9]>,
 }
 
 fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
@@ -101,7 +103,7 @@ fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
     for (d, s) in q.iter_mut().zip(p) {
         *d = *s;
     }
-    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false }
+    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, lut: None }
 }
 
 /// Box passes along x (vertical = false) or y for the radii (radius 0 is a no-op on the CPU).
@@ -229,7 +231,7 @@ fn steps(op: &FxOp) -> Vec<Step> {
                 gs_p2,
             ];
             out.push(step(OP_LUMETRI, [l.creative_on as u32, l.vignette_on as u32, gs_mode, 0], &p));
-            if l.wheels_on {
+            if l.wheels_on || l.curve_mask != 0 {
                 let (adv_mode, adv_white, adv_p2) = match l.adv_gs {
                     filmcraft_color::GradeSpace::Sdr => (0u32, 0.0f32, 0.0f32),
                     filmcraft_color::GradeSpace::Pq { white, norm } => (1u32, white, norm),
@@ -252,7 +254,11 @@ fn steps(op: &FxOp) -> Vec<Step> {
                     l.wheel_hi[1],
                     l.wheel_hi[2],
                 ];
-                out.push(step(OP_LUMETRI_ADV, [0, l.wheels_on as u32, 0, adv_mode], &adv_p));
+                let mut adv = step(OP_LUMETRI_ADV, [0, l.wheels_on as u32, l.curve_mask, adv_mode], &adv_p);
+                if l.curve_mask != 0 {
+                    adv.lut = Some(l.curves.clone());
+                }
+                out.push(adv);
             }
         }
     }
@@ -416,8 +422,41 @@ impl FxStage {
             }
             let keep = if s.unsharp_blur || s.combine { orig } else { None };
             let dst = (0..n).find(|k| *k != cur && Some(*k) != keep)?;
-            let aux = match (s.combine, orig) {
-                (true, Some(o)) => views.get(o)?,
+            let lut_view = if let Some(ref curves) = s.lut {
+                let mut data = vec![0u8; 1024 * 9 * 16];
+                for (row, c_opt) in curves.iter().enumerate() {
+                    if let Some(c) = c_opt {
+                        for (x, &v) in c.iter().take(1024).enumerate() {
+                            let off = (row * 1024 + x) * 16;
+                            if let Some(dst_bytes) = data.get_mut(off..off + 4) {
+                                dst_bytes.copy_from_slice(&v.to_le_bytes());
+                            }
+                        }
+                    }
+                }
+                let tex = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("fx-curve-lut"),
+                    size: wgpu::Extent3d { width: 1024, height: 9, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: FX_FORMAT,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                    &data,
+                    wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(1024 * 16), rows_per_image: Some(9) },
+                    wgpu::Extent3d { width: 1024, height: 9, depth_or_array_layers: 1 },
+                );
+                Some(tex.create_view(&wgpu::TextureViewDescriptor::default()))
+            } else {
+                None
+            };
+            let aux = match (s.combine, orig, &lut_view) {
+                (true, Some(o), _) => views.get(o)?,
+                (_, _, Some(lv)) => lv,
                 _ => dummy,
             };
             let mut bytes = Vec::with_capacity(128);

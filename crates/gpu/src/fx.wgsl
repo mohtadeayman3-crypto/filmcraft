@@ -631,9 +631,24 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
     return gs_decode(v, gs_mode, gs_white, gs_p2);
 }
 
+fn sample_curve(row: i32, x: f32, hdr: bool) -> f32 {
+    if hdr && x > 1.0 {
+        let end_v = textureLoad(aux, vec2<i32>(1023, row), 0).x;
+        return end_v + (x - 1.0);
+    }
+    let p = clamp(x, 0.0, 1.0) * 1023.0;
+    let i = clamp(i32(p), 0, 1023);
+    let j = min(i + 1, 1023);
+    let li = textureLoad(aux, vec2<i32>(i, row), 0).x;
+    let lj = textureLoad(aux, vec2<i32>(j, row), 0).x;
+    return li + (lj - li) * (p - f32(i));
+}
+
 fn lumetri_adv_op(c: vec3<f32>) -> vec3<f32> {
     let wheels_on = u.i1.y != 0u;
+    let curve_mask = u.i1.z;
     let gs_mode = u.i1.w;
+    let hdr = gs_mode != 0u;
     let gs_white = u.p0.y;
     let gs_p2 = u.p0.z;
 
@@ -649,6 +664,48 @@ fn lumetri_adv_op(c: vec3<f32>) -> vec3<f32> {
         let hi = u.p3.xyz;
         v = v + sh * wsh + mid * wmid;
         v = v * (vec3(1.0) + hi * whi);
+    }
+    if (curve_mask & 1u) != 0u {
+        v = vec3(sample_curve(0, v.x, hdr), sample_curve(0, v.y, hdr), sample_curve(0, v.z, hdr));
+    }
+    if (curve_mask & 2u) != 0u {
+        v.x = sample_curve(1, v.x, hdr);
+    }
+    if (curve_mask & 4u) != 0u {
+        v.y = sample_curve(2, v.y, hdr);
+    }
+    if (curve_mask & 8u) != 0u {
+        v.z = sample_curve(3, v.z, hdr);
+    }
+    if (curve_mask & 0x1F0u) != 0u {
+        var m = 1.0;
+        var u_rgb = clamp(v, vec3(0.0), vec3(1.0));
+        if hdr {
+            m = max(max(max(v.x, v.y), v.z), 1.0);
+            u_rgb = max(v / m, vec3(0.0));
+        }
+        var h = rgb_to_hsl(u_rgb);
+        let h0 = h.x;
+        let s0 = h.y;
+        let l0 = h.z;
+        if (curve_mask & 32u) != 0u {
+            h.x = fract_euclid(h.x + (sample_curve(5, h0, false) - 0.5));
+        }
+        var sm = 1.0;
+        if (curve_mask & 16u) != 0u {
+            sm *= sample_curve(4, h0, false) * 2.0;
+        }
+        if (curve_mask & 128u) != 0u {
+            sm *= sample_curve(7, l0, false) * 2.0;
+        }
+        if (curve_mask & 256u) != 0u {
+            sm *= sample_curve(8, s0, false) * 2.0;
+        }
+        h.y = clamp(h.y * sm, 0.0, 1.0);
+        if (curve_mask & 64u) != 0u {
+            h.z = clamp(h.z + (sample_curve(6, h0, false) - 0.5) * 0.5, 0.0, 1.0);
+        }
+        v = hsl_to_rgb(h.x, h.y, h.z) * m;
     }
     return gs_decode(v, gs_mode, gs_white, gs_p2);
 }
