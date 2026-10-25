@@ -516,6 +516,19 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
             ],
             true,
         ),
+        (
+            "lumetri",
+            vec![
+                ("input_lut", ParamValue::Text("builtin:slog3-sgamut3cine-to-rec709".into())),
+                ("exposure", fl(0.25)),
+                ("contrast", fl(15.0)),
+                ("look_lut", ParamValue::Text("builtin:look-teal-orange".into())),
+                ("look_intensity", fl(75.0)),
+                ("wheel_midtones", pt(0.05, -0.03)),
+                ("curve_luma", ParamValue::Curve(vec![[0.0, 0.0], [0.5, 0.54], [1.0, 1.0]])),
+            ],
+            false,
+        ),
     ]
 }
 
@@ -742,25 +755,42 @@ fn hostile_parameters_are_bounded() {
 #[test]
 fn lumetri_unsupported_sections_fall_back() {
     let (w, h) = (40usize, 24usize);
-    // sharpen > 0 and input LUT: input_lut falls back to CPU
-    let e = effect("lumetri", &[("sharpen", fl(10.0)), ("input_lut", ParamValue::Text("custom.cube".into()))]);
+    // sharpen + input_lut are both GPU-capable (C1.4 + C1.7)
+    let e = effect("lumetri", &[("sharpen", fl(10.0)), ("input_lut", ParamValue::Text("builtin:slog3-sgamut3cine-to-rec709".into()))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()), "input_lut must fall back to CPU");
+    assert!(op.as_ref().is_some_and(FxOp::gpu_ok), "input_lut + sharpen must be GPU-capable");
 
     // sharpen alone is GPU-capable (C1.4)
     let e = effect("lumetri", &[("sharpen", fl(20.0))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
     assert!(op.as_ref().is_some_and(FxOp::gpu_ok));
 
-    // input_lut alone
-    let e = effect("lumetri", &[("input_lut", ParamValue::Text("test.cube".into()))]);
+    // input_lut alone is GPU-capable (C1.7)
+    let e = effect("lumetri", &[("input_lut", ParamValue::Text("builtin:slog3-sgamut3cine-to-rec709".into()))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(FxOp::gpu_ok));
 
-    // look_lut
-    let e = effect("lumetri", &[("look_lut", ParamValue::Text("look.cube".into()))]);
+    // look_lut is GPU-capable (C1.7)
+    let e = effect("lumetri", &[("look_lut", ParamValue::Text("builtin:look-teal-orange".into()))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(FxOp::gpu_ok));
+
+    // Oversized 3D cube (size 66 > 65 GPU texture packing limit) safely falls back to CPU
+    let mut p = filmcraft_project::Project::new("oversized-lut");
+    let big_cube = filmcraft_color::Lut::from_cube(filmcraft_color::Lut3d::identity(66)).to_cube();
+    p.luts.push(filmcraft_project::ProjectLut { id: "big66".into(), name: "Big66".into(), source_path: None, format: "cube".into(), text: big_cube.into() });
+    let mut cx_big = cx(Tick::ZERO, 1.0);
+    cx_big.project = Some(&p);
+    let e_big = effect("lumetri", &[("input_lut", ParamValue::Text("lib:big66".into()))]);
+    let op_big = FxOp::eval(&e_big, &cx_big, w, h);
+    assert!(op_big.as_ref().is_some_and(|o| !o.gpu_ok()), "3D cube with size > 65 must fall back to CPU");
+
+    // Hostile HSL denoise radius (> 4 px) safely falls back to CPU
+    let mut cx_huge_scale = cx(Tick::ZERO, 4.0);
+    cx_huge_scale.project = None;
+    let e_den = effect("lumetri", &[("hsl_on", ParamValue::Bool(true)), ("hsl_denoise", fl(100.0))]);
+    let op_den = FxOp::eval(&e_den, &cx_huge_scale, w, h);
+    assert!(op_den.as_ref().is_some_and(|o| !o.gpu_ok()), "HSL denoise_r > 4 must fall back to CPU");
 
     // look > 0 is GPU-capable (C1.4)
     let e = effect("lumetri", &[("look", ch(1))]);
@@ -1188,4 +1218,112 @@ fn gpu_log_clip_full_lumetri_chain_matches_cpu() {
     let (_, _, gpu_seq) = c.read_output().expect("readback");
     let (p99, mean, max) = stats8(&cpu_seq, &gpu_seq, &vec![true; 320 * 180]);
     assert!(max <= 1 && mean < 0.2, "log clip composited 8-bit: p99 {p99}, mean {mean:.4}, max {max}");
+}
+
+/// C1.7: External `.cube` (with 1D shaper + 3D cube and custom domains) and `.3dl` LUTs
+/// in `input_lut` and `look_lut` match the CPU `Lut::apply` reference across SDR and HDR.
+#[test]
+fn gpu_lumetri_external_cube_and_3dl_luts_match_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (67u32, 41u32);
+    let mut px = picture(w, h);
+    for (i, p) in px.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        if i % 7 == 0 && p[3] > 0.0 {
+            let boost = 1.0 + (i % 11) as f32;
+            p[0] = half(p[0] * boost);
+            p[1] = half(p[1] * boost);
+            p[2] = half(p[2] * boost);
+        }
+    }
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+
+    let mut proj = filmcraft_project::Project::new("c1-7-luts");
+    // 1. Custom .cube with both a 1D shaper (non-unit domain -0.05..1.15) and a 17^3 3D cube
+    let shaper = filmcraft_color::Lut1d {
+        domain_min: [-0.05, -0.05, -0.05],
+        domain_max: [1.15, 1.15, 1.15],
+        data: (0..32)
+            .map(|i| {
+                let t = i as f32 / 31.0;
+                [t.powf(0.9), (t * 0.95 + 0.02).clamp(0.0, 1.0), t.powf(1.1)]
+            })
+            .collect(),
+    };
+    let cube17 = filmcraft_color::Lut3d::from_fn(17, |[r, g, b]| {
+        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        [
+            (luma + (r - luma) * 1.15 + 0.02 * (1.0 - b)).clamp(0.0, 1.0),
+            (luma + (g - luma) * 1.05).clamp(0.0, 1.0),
+            (luma + (b - luma) * 1.10 + 0.03 * r).clamp(0.0, 1.0),
+        ]
+    });
+    let cube_text = filmcraft_color::Lut { title: "ShaperAndCube17".into(), shaper: Some(shaper), cube: Some(cube17) }.to_cube();
+    proj.luts.push(filmcraft_project::ProjectLut {
+        id: "shaper_cube".into(),
+        name: "ShaperAndCube17".into(),
+        source_path: None,
+        format: "cube".into(),
+        text: cube_text.into(),
+    });
+
+    // 2. Custom Autodesk .3dl LUT (9^3 with 12-bit output values)
+    let lut3dl_cube = filmcraft_color::Lut3d::from_fn(9, |[r, g, b]| [r * 0.9 + b * 0.1, g * 0.95 + 0.02, b * 0.85 + r * 0.15]);
+    let lut3dl_text = filmcraft_color::Lut::from_cube(lut3dl_cube).to_3dl().expect("to_3dl");
+    proj.luts.push(filmcraft_project::ProjectLut {
+        id: "creative_3dl".into(),
+        name: "Creative3dl".into(),
+        source_path: None,
+        format: "3dl".into(),
+        text: lut3dl_text.into(),
+    });
+
+    for working in [filmcraft_color::WorkingSpace::Rec709, filmcraft_color::WorkingSpace::Rec2100Pq, filmcraft_color::WorkingSpace::Rec2100Hlg] {
+        let mut cx_lut = cx(Tick::ZERO, 1.0);
+        cx_lut.working = working;
+        cx_lut.project = Some(&proj);
+        for params in [
+            // Case A: external .cube (1D shaper + 3D cube) as input_lut alone
+            vec![("input_lut", ParamValue::Text("lib:shaper_cube".into())), ("exposure", fl(0.3)), ("contrast", fl(15.0))],
+            // Case B: external .3dl as look_lut at 80% intensity alone (single-pass OP_LUMETRI_LUT)
+            vec![("look_lut", ParamValue::Text("lib:creative_3dl".into())), ("look_intensity", fl(80.0))],
+            // Case C: both input_lut (.cube) and look_lut (.3dl) active together with wheels, curves, HSL, and vignette
+            vec![
+                ("input_lut", ParamValue::Text("lib:shaper_cube".into())),
+                ("temperature", fl(12.0)),
+                ("exposure", fl(0.25)),
+                ("contrast", fl(20.0)),
+                ("look_lut", ParamValue::Text("lib:creative_3dl".into())),
+                ("look_intensity", fl(85.0)),
+                ("wheel_shadows", pt(-0.08, 0.06)),
+                ("wheel_highlights", pt(0.10, -0.05)),
+                ("curve_luma", ParamValue::Curve(vec![[0.0, 0.0], [0.3, 0.25], [0.7, 0.78], [1.0, 1.0]])),
+                ("hue_vs_sat", ParamValue::Curve(vec![[0.0, 0.5], [0.25, 0.65], [0.75, 0.4], [1.0, 0.5]])),
+                ("hsl_on", ParamValue::Bool(true)),
+                ("hsl_hue", fl(28.0)),
+                ("hsl_sat", fl(120.0)),
+                ("vignette_amount", fl(-1.5)),
+            ],
+        ] {
+            let e = effect("lumetri", &params);
+            let op = FxOp::eval(&e, &cx_lut, w as usize, h as usize).expect("lumetri lut op");
+            assert!(op.gpu_ok(), "{working:?} {params:?}: expected gpu_ok");
+            let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+            op.apply(&mut cpu);
+            // Also verify `effects::apply` (which runs `effects::lumetri` if fallback or `op.apply`) agrees
+            let mut cpu_ref = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+            filmcraft_render::effects::apply(&mut cpu_ref, &e, &cx_lut);
+            let (ref_diff, ref_flips) = compare(&cpu.px, &cpu_ref.px);
+            assert!(ref_diff <= 1e-6 && ref_flips == 0.0, "LumetriOp::apply vs effects::apply: {ref_diff:.2e}");
+
+            let fx = LayerFx { size: (w, h), decimation: 1, ops: vec![op] };
+            let (_, _, gpu) = c.effect_image(&frame, &fx).expect("gpu lut effect_image");
+            let (worst, flips) = compare(&cpu.px, &gpu);
+            let tol = if working == filmcraft_color::WorkingSpace::Rec2100Pq { 3e-4 } else { EXACT };
+            assert!(worst <= tol && flips == 0.0, "LUT {working:?} {params:?}: worst {worst:.2e} > {tol:.2e}, flips {flips}");
+        }
+    }
 }

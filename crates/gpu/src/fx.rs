@@ -56,6 +56,7 @@ const OP_LUMETRI_ADV: u32 = 32;
 const OP_LUMETRI_HSL_KEY: u32 = 33;
 const OP_LUMETRI_HSL_DENOISE: u32 = 34;
 const OP_LUMETRI_HSL_APPLY: u32 = 35;
+const OP_LUMETRI_LUT: u32 = 36;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -99,6 +100,8 @@ struct Step {
     unsharp_blur: bool,
     /// Optional 1024×9 curve LUT table bound to `@binding(3)` (`aux`) during `OP_LUMETRI_ADV`.
     lut: Option<[Option<Vec<f32>>; 9]>,
+    /// Optional 1D/3D external or built-in LUT bound to `@binding(3)` (`aux`) during `OP_LUMETRI_LUT`.
+    color_lut: Option<std::sync::Arc<filmcraft_color::Lut>>,
 }
 
 fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
@@ -106,7 +109,21 @@ fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
     for (d, s) in q.iter_mut().zip(p) {
         *d = *s;
     }
-    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, lut: None }
+    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, lut: None, color_lut: None }
+}
+
+fn lumetri_lut_step(lut: &std::sync::Arc<filmcraft_color::Lut>, gs_mode: u32, gs_white: f32, gs_p2: f32, intensity: f32, skip_decode: bool) -> Step {
+    let cube_n = lut.cube.as_ref().map_or(0, |c| c.size as u32);
+    let shaper_n = lut.shaper.as_ref().map_or(0, |s| s.size() as u32);
+    let (s_min, s_max) = lut.shaper.as_ref().map_or(([0.0; 3], [1.0; 3]), |s| (s.domain_min, s.domain_max));
+    let (c_min, c_max) = lut.cube.as_ref().map_or(([0.0; 3], [1.0; 3]), |c| (c.domain_min, c.domain_max));
+    let p = [
+        intensity, gs_white, gs_p2, 0.0, s_min[0], s_min[1], s_min[2], 0.0, s_max[0], s_max[1], s_max[2], 0.0, c_min[0], c_min[1], c_min[2], 0.0, c_max[0],
+        c_max[1], c_max[2], 0.0,
+    ];
+    let mut s = step(OP_LUMETRI_LUT, [gs_mode, cube_n, shaper_n, skip_decode as u32], &p);
+    s.color_lut = Some(std::sync::Arc::clone(lut));
+    s
 }
 
 /// Box passes along x (vertical = false) or y for the radii (radius 0 is a no-op on the CPU).
@@ -198,6 +215,9 @@ fn steps(op: &FxOp) -> Vec<Step> {
                 filmcraft_color::GradeSpace::Pq { white, norm } => (1u32, white, norm),
                 filmcraft_color::GradeSpace::Hlg { white, gamma } => (2u32, white, gamma),
             };
+            if let Some(lut) = &l.input_lut {
+                out.push(lumetri_lut_step(lut, gs_mode, gs_white, gs_p2, 1.0, false));
+            }
             let ge = [l.gains[0] * l.exposure, l.gains[1] * l.exposure, l.gains[2] * l.exposure];
             let b0 = -l.bl * 0.15;
             let w0 = 1.0 - l.wh * 0.15;
@@ -239,12 +259,17 @@ fn steps(op: &FxOp) -> Vec<Step> {
                 filmcraft_color::GradeSpace::Pq { white, norm } => (1u32, white, norm),
                 filmcraft_color::GradeSpace::Hlg { white, gamma } => (2u32, white, gamma),
             };
-            if l.look > 0 || l.wheels_on || l.curve_mask != 0 {
+            let has_adv = l.look > 0 || l.wheels_on || l.curve_mask != 0;
+            if let Some(lut) = &l.look_lut {
+                out.push(lumetri_lut_step(lut, adv_mode, adv_white, adv_p2, l.look_k, has_adv));
+            }
+            if has_adv {
+                let skip_encode = if l.look_lut.is_some() { 1.0 } else { 0.0 };
                 let adv_p = [
                     l.look_k,
                     adv_white,
                     adv_p2,
-                    0.0,
+                    skip_encode,
                     l.wheel_sh[0],
                     l.wheel_sh[1],
                     l.wheel_sh[2],
@@ -492,6 +517,58 @@ impl FxStage {
                     &data,
                     wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(1024 * 16), rows_per_image: Some(9) },
                     wgpu::Extent3d { width: 1024, height: 9, depth_or_array_layers: 1 },
+                );
+                Some(tex.create_view(&wgpu::TextureViewDescriptor::default()))
+            } else if let Some(ref color_lut) = s.color_lut {
+                let cube_n = color_lut.cube.as_ref().map_or(0, |c| c.size.min(65));
+                let shaper_n = color_lut.shaper.as_ref().map_or(0, |sh| sh.size().min(8192));
+                let tex_w = (cube_n * cube_n).max(shaper_n).max(1);
+                let tex_h = (cube_n + usize::from(shaper_n > 0)).max(1);
+                if tex_w > max as usize || tex_h > max as usize {
+                    return None;
+                }
+                let mut data = vec![0u8; tex_w * tex_h * 16];
+                if let Some(c) = &color_lut.cube {
+                    for b in 0..cube_n {
+                        for g in 0..cube_n {
+                            for r in 0..cube_n {
+                                let rgb = c.at(r, g, b);
+                                let off = (b * tex_w + (r + g * cube_n)) * 16;
+                                if let Some(dst_bytes) = data.get_mut(off..off + 12) {
+                                    dst_bytes[0..4].copy_from_slice(&rgb[0].to_le_bytes());
+                                    dst_bytes[4..8].copy_from_slice(&rgb[1].to_le_bytes());
+                                    dst_bytes[8..12].copy_from_slice(&rgb[2].to_le_bytes());
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(sh) = &color_lut.shaper {
+                    for (x, rgb) in sh.data.iter().take(shaper_n).enumerate() {
+                        let off = (cube_n * tex_w + x) * 16;
+                        if let Some(dst_bytes) = data.get_mut(off..off + 12) {
+                            dst_bytes[0..4].copy_from_slice(&rgb[0].to_le_bytes());
+                            dst_bytes[4..8].copy_from_slice(&rgb[1].to_le_bytes());
+                            dst_bytes[8..12].copy_from_slice(&rgb[2].to_le_bytes());
+                        }
+                    }
+                }
+                let extent = wgpu::Extent3d { width: tex_w as u32, height: tex_h as u32, depth_or_array_layers: 1 };
+                let tex = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("fx-color-lut"),
+                    size: extent,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: FX_FORMAT,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                    &data,
+                    wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some((tex_w * 16) as u32), rows_per_image: Some(tex_h as u32) },
+                    extent,
                 );
                 Some(tex.create_view(&wgpu::TextureViewDescriptor::default()))
             } else {

@@ -183,6 +183,8 @@ pub enum FxOp {
 pub struct LumetriOp {
     pub basic_gs: filmcraft_color::GradeSpace,
     pub adv_gs: filmcraft_color::GradeSpace,
+    pub input_lut: Option<std::sync::Arc<filmcraft_color::Lut>>,
+    pub look_lut: Option<std::sync::Arc<filmcraft_color::Lut>>,
     pub gains: [f32; 3],
     pub exposure: f32,
     pub contrast: f32,
@@ -541,9 +543,9 @@ impl FxOp {
                 let basic_gs = grade_space(e, cx, "hdr_white");
                 let adv_gs = grade_space(e, cx, "curves_hdr_range");
                 let is_hdr = basic_gs.is_hdr();
-                let has_input_lut = basic_on && !text(e, "input_lut").is_empty();
-                let has_look_lut = creative_on && !text(e, "look_lut").is_empty();
-                let look = if creative_on && !has_look_lut { choice(e, "look") } else { 0 };
+                let input_lut = if basic_on { crate::luts::resolve(cx.project, text(e, "input_lut")) } else { None };
+                let look_lut = if creative_on { crate::luts::resolve(cx.project, text(e, "look_lut")) } else { None };
+                let look = if creative_on && look_lut.is_none() { choice(e, "look") } else { 0 };
                 let look_k = f(e, "look_intensity", cx) / 100.0;
                 let sharpen = if creative_on { f(e, "sharpen", cx) / 100.0 } else { 0.0 };
                 let px_scale_ok = cx.px_scale.is_finite();
@@ -623,7 +625,19 @@ impl FxOp {
                 let hsl_blur_radii =
                     if hsl_sigma >= 0.3 { crate::effects::boxes_for_gauss(hsl_sigma, 3).into_iter().map(|r| r as u32).collect() } else { Vec::new() };
 
-                let gpu_capable = !has_input_lut && !has_look_lut && wheels_finite && curves_finite && px_scale_ok && hsl_finite && hsl_denoise_r <= 4;
+                let lut_ok = |l: &Option<std::sync::Arc<filmcraft_color::Lut>>| {
+                    l.as_ref().is_none_or(|lut| {
+                        lut.shaper.as_ref().is_none_or(|s| {
+                            (2..=8192).contains(&s.size())
+                                && (0..3).all(|d| s.domain_min[d].is_finite() && s.domain_max[d].is_finite() && s.domain_max[d] > s.domain_min[d])
+                        }) && lut.cube.as_ref().is_none_or(|c| {
+                            (2..=65).contains(&c.size)
+                                && c.data.len() == c.size * c.size * c.size
+                                && (0..3).all(|d| c.domain_min[d].is_finite() && c.domain_max[d].is_finite() && c.domain_max[d] > c.domain_min[d])
+                        })
+                    })
+                };
+                let gpu_capable = lut_ok(&input_lut) && lut_ok(&look_lut) && wheels_finite && curves_finite && px_scale_ok && hsl_finite && hsl_denoise_r <= 4;
 
                 let bf = |id: &str| if basic_on { f(e, id, cx) } else { 0.0 };
                 let specular = if is_hdr { bf("hdr_specular") / 100.0 } else { 0.0 };
@@ -650,6 +664,8 @@ impl FxOp {
                 FxOp::Lumetri(Box::new(LumetriOp {
                     basic_gs,
                     adv_gs,
+                    input_lut,
+                    look_lut,
                     gains,
                     exposure,
                     contrast,
@@ -1100,7 +1116,12 @@ impl FxOp {
                 } = **l;
                 let hdr = basic_gs.is_hdr();
                 let (w, h) = (img.w as f32, img.h as f32);
+                let input_lut = l.input_lut.as_deref();
                 img.map_rgb(|c, x, y| {
+                    let c = match input_lut {
+                        Some(lut) => basic_gs.decode(crate::effects::within_unit(basic_gs.encode(c), hdr, |v| lut.apply(v))),
+                        None => c,
+                    };
                     // white balance + exposure in linear light
                     let lin = [c[0] * gains[0] * exposure, c[1] * gains[1] * exposure, c[2] * gains[2] * exposure];
                     let mut v = basic_gs.encode(lin);
@@ -1162,10 +1183,11 @@ impl FxOp {
                     }
                     basic_gs.decode(v)
                 });
-                if l.look > 0 || l.wheels_on || l.curve_mask != 0 {
+                if l.look_lut.is_some() || l.look > 0 || l.wheels_on || l.curve_mask != 0 {
                     use crate::effects::{apply_look, within_unit};
                     let (adv_gs, look, look_k, wheels_on, wheel_sh, wheel_mid, wheel_hi, curve_mask) =
                         (l.adv_gs, l.look, l.look_k, l.wheels_on, l.wheel_sh, l.wheel_mid, l.wheel_hi, l.curve_mask);
+                    let look_lut = l.look_lut.as_deref();
                     let adv_hdr = adv_gs.is_hdr();
                     let [luma_c, red_c, green_c, blue_c, hvs, hvh, hvl, lvs, svs] = &l.curves;
                     let sample = |lut: &[f32], x: f32| -> f32 {
@@ -1183,7 +1205,10 @@ impl FxOp {
                     };
                     img.map_rgb(|c, _, _| {
                         let mut v = adv_gs.encode(c);
-                        if look > 0 {
+                        if let Some(lut) = look_lut {
+                            let lk = within_unit(v, adv_hdr, |u| lut.apply(u));
+                            v = [v[0] + (lk[0] - v[0]) * look_k, v[1] + (lk[1] - v[1]) * look_k, v[2] + (lk[2] - v[2]) * look_k];
+                        } else if look > 0 {
                             let lk = if adv_hdr { within_unit(v, true, |u| apply_look(look, u)) } else { apply_look(look, v) };
                             v = [v[0] + (lk[0] - v[0]) * look_k, v[1] + (lk[1] - v[1]) * look_k, v[2] + (lk[2] - v[2]) * look_k];
                         }

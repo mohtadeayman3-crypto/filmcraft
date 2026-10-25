@@ -350,16 +350,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         p.value = ParamValue::Float(0.0);
     }
     let lumetri_refine = create_full_lumetri_instance(true)?;
+    let mut lumetri_luts = lumetri_std.clone();
+    if let Some(p) = lumetri_luts.params.get_mut("input_lut") {
+        p.value = ParamValue::Text("builtin:slog3-sgamut3cine-to-rec709".into());
+    }
+    if let Some(p) = lumetri_luts.params.get_mut("look_lut") {
+        p.value = ParamValue::Text("builtin:look-teal-orange".into());
+    }
     let op_nosharp = FxOp::eval(&lumetri_nosharp, &cx, W as usize, H as usize).ok_or("FxOp::eval failed for no-sharpen Lumetri")?;
     let op_std = FxOp::eval(&lumetri_std, &cx, W as usize, H as usize).ok_or("FxOp::eval failed for standard Lumetri")?;
     let op_refine = FxOp::eval(&lumetri_refine, &cx, W as usize, H as usize).ok_or("FxOp::eval failed for refine Lumetri")?;
-    if !op_nosharp.gpu_ok() || !op_std.gpu_ok() || !op_refine.gpu_ok() {
+    let op_luts = FxOp::eval(&lumetri_luts, &cx, W as usize, H as usize).ok_or("FxOp::eval failed for LUTs Lumetri")?;
+    if !op_nosharp.gpu_ok() || !op_std.gpu_ok() || !op_refine.gpu_ok() || !op_luts.gpu_ok() {
         return Err("Lumetri FxOp unexpectedly fell back to CPU".into());
     }
 
     let lfx_nosharp = Arc::new(LayerFx { size: (W, H), decimation: 1, ops: vec![op_nosharp] });
     let lfx_std = Arc::new(LayerFx { size: (W, H), decimation: 1, ops: vec![op_std] });
     let lfx_refine = Arc::new(LayerFx { size: (W, H), decimation: 1, ops: vec![op_refine] });
+    let lfx_luts = Arc::new(LayerFx { size: (W, H), decimation: 1, ops: vec![op_luts] });
 
     let base_px = create_synthetic_rgba_f32(W, H);
     let cached_yuv_frame = Arc::new(create_synthetic_yuv8(W, H, 0));
@@ -467,6 +476,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let st_gpu_refine = Stats::from_samples(gpu_refine_times);
     st_gpu_refine.print("GPU Lumetri (6 sections + HSL Denoise 10 & Blur 10)");
+
+    let plan_graded_luts = FramePlan::Layers {
+        width: W as usize,
+        height: H as usize,
+        layers: vec![PlanLayer {
+            frame: cached_yuv_frame.clone(),
+            matrix: Affine::IDENTITY,
+            opacity: 1.0,
+            blend: Blend::Normal,
+            fx: Some(lfx_luts.clone()),
+            input: None,
+        }],
+    };
+    for _ in 0..WARMUP_FRAMES {
+        let _ = black_box(comp.composite(&plan_graded_luts));
+        wait_gpu(&device)?;
+    }
+    let mut gpu_luts_times = Vec::with_capacity(BENCH_FRAMES);
+    for _ in 0..BENCH_FRAMES {
+        let t0 = Instant::now();
+        let _ = black_box(comp.composite(&plan_graded_luts));
+        wait_gpu(&device)?;
+        gpu_luts_times.push(t0.elapsed().as_secs_f64() * 1000.0);
+    }
+    let st_gpu_luts = Stats::from_samples(gpu_luts_times);
+    st_gpu_luts.print("GPU Lumetri (6 sections + Input 33^3 LUT + Look 33^3 LUT)");
 
     // =========================================================================
     // (b) End-to-End 4K Frame Time Including Upload and Readback
@@ -769,13 +804,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cpu_times.push(t0.elapsed().as_secs_f64() * 1000.0);
     }
     let st_cpu = Stats::from_samples(cpu_times);
+    let mut cpu_luts_times = Vec::with_capacity(5);
+    for _ in 0..5 {
+        let mut img = base_img.clone();
+        let t0 = Instant::now();
+        filmcraft_render::effects::apply(&mut img, &lumetri_luts, &cx);
+        black_box(&img);
+        cpu_luts_times.push(t0.elapsed().as_secs_f64() * 1000.0);
+    }
+    let st_cpu_luts = Stats::from_samples(cpu_luts_times);
     println!("\n--- Reference Comparison (3840x2160 6-Section Lumetri) ---");
     st_cpu.print("CPU Reference (rayon parallel 3840x2160 f32)");
+    st_cpu_luts.print("CPU Reference + Input 33^3 LUT + Look 33^3 LUT");
     println!(
         "  Speedup (GPU grading only vs CPU):                   {:6.1}x ({:.2} ms -> {:.2} ms)",
         st_cpu.median_ms / st_gpu_std.median_ms.max(0.001),
         st_cpu.median_ms,
         st_gpu_std.median_ms
+    );
+    println!(
+        "  Speedup (GPU grading + 2x 33^3 LUTs vs CPU + LUTs):  {:6.1}x ({:.2} ms -> {:.2} ms)",
+        st_cpu_luts.median_ms / st_gpu_luts.median_ms.max(0.001),
+        st_cpu_luts.median_ms,
+        st_gpu_luts.median_ms
     );
     println!(
         "  Speedup (4K YUV8 playback vs CPU):                   {:6.1}x ({:.2} ms -> {:.2} ms, {:.1} fps)",

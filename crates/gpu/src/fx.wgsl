@@ -54,6 +54,7 @@ const OP_LUMETRI_ADV: u32 = 32u;
 const OP_LUMETRI_HSL_KEY: u32 = 33u;
 const OP_LUMETRI_HSL_DENOISE: u32 = 34u;
 const OP_LUMETRI_HSL_APPLY: u32 = 35u;
+const OP_LUMETRI_LUT: u32 = 36u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -695,6 +696,96 @@ fn apply_look_wgsl(look: u32, c: vec3<f32>) -> vec3<f32> {
     }
 }
 
+fn lumetri_lut_at(r: u32, g: u32, b: u32, n: u32) -> vec3<f32> {
+    return textureLoad(aux, vec2<i32>(i32(r + g * n), i32(b)), 0).xyz;
+}
+
+fn lumetri_lut_apply_unit(u_in: vec3<f32>, cube_n: u32, shaper_n: u32) -> vec3<f32> {
+    var c = u_in;
+    if shaper_n >= 2u {
+        let s_min = u.p1.xyz;
+        let s_max = u.p2.xyz;
+        let n1 = shaper_n - 1u;
+        let row = i32(cube_n);
+        for (var k = 0; k < 3; k++) {
+            let t = clamp((c[k] - s_min[k]) / (s_max[k] - s_min[k]), 0.0, 1.0) * f32(n1);
+            let i = min(u32(t), n1 - 1u);
+            let f = t - f32(i);
+            let v0 = textureLoad(aux, vec2<i32>(i32(i), row), 0)[k];
+            let v1 = textureLoad(aux, vec2<i32>(i32(min(i + 1u, n1)), row), 0)[k];
+            c[k] = v0 + (v1 - v0) * f;
+        }
+    }
+    if cube_n >= 2u {
+        let c_min = u.p3.xyz;
+        let c_max = u.p4.xyz;
+        let m = f32(cube_n - 1u);
+        let t = clamp((c - c_min) / (c_max - c_min), vec3(0.0), vec3(1.0)) * m;
+        let i = min(vec3<u32>(t), vec3(cube_n - 2u));
+        let f = t - vec3<f32>(i);
+        let fr = f.x;
+        let fg = f.y;
+        let fb = f.z;
+        let c000 = lumetri_lut_at(i.x, i.y, i.z, cube_n);
+        let c111 = lumetri_lut_at(i.x + 1u, i.y + 1u, i.z + 1u, cube_n);
+        var ca: vec3<f32>;
+        var cb: vec3<f32>;
+        var w: vec4<f32>;
+        if fr > fg {
+            if fg > fb {
+                ca = lumetri_lut_at(i.x + 1u, i.y, i.z, cube_n);
+                cb = lumetri_lut_at(i.x + 1u, i.y + 1u, i.z, cube_n);
+                w = vec4(1.0 - fr, fr - fg, fg - fb, fb);
+            } else if fr > fb {
+                ca = lumetri_lut_at(i.x + 1u, i.y, i.z, cube_n);
+                cb = lumetri_lut_at(i.x + 1u, i.y, i.z + 1u, cube_n);
+                w = vec4(1.0 - fr, fr - fb, fb - fg, fg);
+            } else {
+                ca = lumetri_lut_at(i.x, i.y, i.z + 1u, cube_n);
+                cb = lumetri_lut_at(i.x + 1u, i.y, i.z + 1u, cube_n);
+                w = vec4(1.0 - fb, fb - fr, fr - fg, fg);
+            }
+        } else if fb > fg {
+            ca = lumetri_lut_at(i.x, i.y, i.z + 1u, cube_n);
+            cb = lumetri_lut_at(i.x, i.y + 1u, i.z + 1u, cube_n);
+            w = vec4(1.0 - fb, fb - fg, fg - fr, fr);
+        } else if fb > fr {
+            ca = lumetri_lut_at(i.x, i.y + 1u, i.z, cube_n);
+            cb = lumetri_lut_at(i.x, i.y + 1u, i.z + 1u, cube_n);
+            w = vec4(1.0 - fg, fg - fb, fb - fr, fr);
+        } else {
+            ca = lumetri_lut_at(i.x, i.y + 1u, i.z, cube_n);
+            cb = lumetri_lut_at(i.x + 1u, i.y + 1u, i.z, cube_n);
+            w = vec4(1.0 - fg, fg - fr, fr - fb, fb);
+        }
+        c = w.x * c000 + w.y * ca + w.z * cb + w.w * c111;
+    }
+    return c;
+}
+
+fn lumetri_lut_op(c: vec3<f32>) -> vec3<f32> {
+    let gs_mode = u.i1.x;
+    let cube_n = u.i1.y;
+    let shaper_n = u.i1.z;
+    let skip_decode = u.i1.w != 0u;
+    let intensity = u.p0.x;
+    let gs_white = u.p0.y;
+    let gs_p2 = u.p0.z;
+    var v = gs_encode(c, gs_mode, gs_white, gs_p2);
+    var lk: vec3<f32>;
+    if gs_mode != 0u {
+        let m = max(max(max(v.x, v.y), v.z), 1.0);
+        lk = lumetri_lut_apply_unit(max(v / m, vec3(0.0)), cube_n, shaper_n) * m;
+    } else {
+        lk = lumetri_lut_apply_unit(clamp(v, vec3(0.0), vec3(1.0)), cube_n, shaper_n);
+    }
+    v = v + (lk - v) * intensity;
+    if skip_decode {
+        return v;
+    }
+    return gs_decode(v, gs_mode, gs_white, gs_p2);
+}
+
 fn lumetri_adv_op(c: vec3<f32>) -> vec3<f32> {
     let look = u.i1.x;
     let wheels_on = u.i1.y != 0u;
@@ -705,7 +796,12 @@ fn lumetri_adv_op(c: vec3<f32>) -> vec3<f32> {
     let gs_white = u.p0.y;
     let gs_p2 = u.p0.z;
 
-    var v = gs_encode(c, gs_mode, gs_white, gs_p2);
+    var v: vec3<f32>;
+    if u.p0.w != 0.0 {
+        v = c;
+    } else {
+        v = gs_encode(c, gs_mode, gs_white, gs_p2);
+    }
     if look > 0u {
         var lk: vec3<f32>;
         if hdr {
@@ -985,6 +1081,16 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             }
             let c = o.rgb / a;
             let res = lumetri_adv_op(c);
+            return vec4(res * a, a);
+        }
+        case OP_LUMETRI_LUT: {
+            let o = ld(p);
+            let a = o.a;
+            if a <= 1e-6 {
+                return o;
+            }
+            let c = o.rgb / a;
+            let res = lumetri_lut_op(c);
             return vec4(res * a, a);
         }
         case OP_LUMETRI_HSL_KEY: {
