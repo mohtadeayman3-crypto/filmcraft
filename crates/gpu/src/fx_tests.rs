@@ -303,6 +303,38 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
             ],
             false,
         ),
+        (
+            "lumetri",
+            vec![
+                ("basic_on", ParamValue::Bool(false)),
+                ("creative_on", ParamValue::Bool(false)),
+                ("vignette_on", ParamValue::Bool(false)),
+                ("wheel_shadows", pt(-0.4, 0.3)),
+                ("wheel_midtones", pt(0.25, -0.2)),
+                ("wheel_highlights", pt(0.5, 0.4)),
+                ("wheel_shadows_l", fl(-20.0)),
+                ("wheel_midtones_l", fl(25.0)),
+                ("wheel_highlights_l", fl(30.0)),
+            ],
+            false,
+        ),
+        (
+            "lumetri",
+            vec![
+                ("temperature", fl(15.0)),
+                ("exposure", fl(0.3)),
+                ("contrast", fl(20.0)),
+                ("creative_sat", fl(110.0)),
+                ("wheel_shadows", pt(0.3, -0.25)),
+                ("wheel_midtones", pt(-0.15, 0.2)),
+                ("wheel_highlights", pt(-0.3, 0.35)),
+                ("wheel_shadows_l", fl(15.0)),
+                ("wheel_midtones_l", fl(-10.0)),
+                ("wheel_highlights_l", fl(20.0)),
+                ("vignette_amount", fl(-2.0)),
+            ],
+            false,
+        ),
     ]
 }
 
@@ -475,6 +507,8 @@ fn hostile_parameters_are_bounded() {
         effect("lumetri", &[("temperature", fl(f64::INFINITY))]),
         effect("lumetri", &[("contrast", fl(f64::NAN))]),
         effect("lumetri", &[("vignette_amount", fl(f64::NAN))]),
+        effect("lumetri", &[("wheel_shadows", pt(f64::NAN, 0.0))]),
+        effect("lumetri", &[("wheel_midtones_l", fl(f64::INFINITY))]),
     ];
     for e in &nan {
         let op = FxOp::eval(e, &cx(Tick::ZERO, 1.0), w, h);
@@ -551,15 +585,14 @@ fn lumetri_unsupported_sections_fall_back() {
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
     assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
 
-    // wheel offset
+    // wheel offset and lightness are GPU-capable (C1.2)
     let e = effect("lumetri", &[("wheel_shadows", pt(0.5, 0.0))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(FxOp::gpu_ok));
 
-    // wheel lightness
     let e = effect("lumetri", &[("wheel_midtones_l", fl(20.0))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(FxOp::gpu_ok));
 
     // HSL secondary on
     let e = effect("lumetri", &[("hsl_on", ParamValue::Bool(true))]);

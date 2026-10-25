@@ -1522,6 +1522,28 @@ mod lumetri_cpu_parity_tests {
                     ("blacks", fl(-100.0)),
                 ],
             ),
+            (
+                "wheels",
+                vec![
+                    ("wheel_shadows", ParamValue::Vec2(Vec2::new(-0.35, 0.25))),
+                    ("wheel_midtones", ParamValue::Vec2(Vec2::new(0.2, -0.15))),
+                    ("wheel_highlights", ParamValue::Vec2(Vec2::new(0.4, 0.3))),
+                    ("wheel_shadows_l", fl(-15.0)),
+                    ("wheel_midtones_l", fl(20.0)),
+                    ("wheel_highlights_l", fl(25.0)),
+                ],
+            ),
+            (
+                "basic_plus_wheels",
+                vec![
+                    ("temperature", fl(15.0)),
+                    ("exposure", fl(0.4)),
+                    ("contrast", fl(20.0)),
+                    ("wheel_shadows", ParamValue::Vec2(Vec2::new(0.3, -0.2))),
+                    ("wheel_midtones_l", fl(15.0)),
+                    ("wheel_highlights", ParamValue::Vec2(Vec2::new(-0.25, 0.35))),
+                ],
+            ),
         ];
 
         let (w, h) = (67usize, 41usize);

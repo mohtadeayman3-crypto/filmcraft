@@ -182,6 +182,7 @@ pub enum FxOp {
 #[derive(Clone, Debug, PartialEq)]
 pub struct LumetriOp {
     pub basic_gs: filmcraft_color::GradeSpace,
+    pub adv_gs: filmcraft_color::GradeSpace,
     pub gains: [f32; 3],
     pub exposure: f32,
     pub contrast: f32,
@@ -202,6 +203,10 @@ pub struct LumetriOp {
     pub vround: f32,
     pub vfeather: f32,
     pub aspect: f32,
+    pub wheels_on: bool,
+    pub wheel_sh: [f32; 3],
+    pub wheel_mid: [f32; 3],
+    pub wheel_hi: [f32; 3],
     pub gpu_capable: bool,
 }
 
@@ -511,6 +516,7 @@ impl FxOp {
                 use crate::effects::{curve_param, is_identity_curve, wheel_rgb};
                 let (basic_on, creative_on, vignette_on) = (on(e, "basic_on"), on(e, "creative_on"), on(e, "vignette_on"));
                 let basic_gs = grade_space(e, cx, "hdr_white");
+                let adv_gs = grade_space(e, cx, "curves_hdr_range");
                 let is_hdr = basic_gs.is_hdr();
                 let has_input_lut = basic_on && !text(e, "input_lut").is_empty();
                 let has_look_lut = creative_on && !text(e, "look_lut").is_empty();
@@ -525,17 +531,20 @@ impl FxOp {
                             .any(|id| curve_param(e, id).is_some_and(|c| !c.is_empty()))
                 };
 
-                let wheels_on = on(e, "wheels_on");
-                let has_wheels = wheels_on && {
-                    let v2 = |id: &str| e.param(id).map(|p| p.vec2_at(cx.t)).unwrap_or_default();
-                    let (ws, wm, wh) = (wheel_rgb(v2("wheel_shadows")), wheel_rgb(v2("wheel_midtones")), wheel_rgb(v2("wheel_highlights")));
-                    let (ls, lm, lh) = (f(e, "wheel_shadows_l", cx) / 100.0, f(e, "wheel_midtones_l", cx) / 100.0, f(e, "wheel_highlights_l", cx) / 100.0);
-                    ws.iter().chain(&wm).chain(&wh).any(|v| v.abs() > 1e-5) || (ls.abs() + lm.abs() + lh.abs() > 1e-5)
-                };
+                let wheels_enabled = on(e, "wheels_on");
+                let v2 = |id: &str| e.param(id).map(|p| p.vec2_at(cx.t)).unwrap_or_default();
+                let (ws_pt, wm_pt, wh_pt) = (v2("wheel_shadows"), v2("wheel_midtones"), v2("wheel_highlights"));
+                let wheels_finite = [ws_pt.x, ws_pt.y, wm_pt.x, wm_pt.y, wh_pt.x, wh_pt.y].iter().all(|x| x.is_finite());
+                let (ws, wm, wh) = (wheel_rgb(ws_pt), wheel_rgb(wm_pt), wheel_rgb(wh_pt));
+                let (ls, lm, lh) = (f(e, "wheel_shadows_l", cx) / 100.0, f(e, "wheel_midtones_l", cx) / 100.0, f(e, "wheel_highlights_l", cx) / 100.0);
+                let wheels_on = wheels_enabled && (ws.iter().chain(&wm).chain(&wh).any(|v| v.abs() > 1e-5) || (ls.abs() + lm.abs() + lh.abs() > 1e-5));
+                let wheel_sh = ws.map(|x| x * 0.3 + ls * 0.3);
+                let wheel_mid = wm.map(|x| x * 0.3 + lm * 0.3);
+                let wheel_hi = wh.map(|x| x * 0.5 + lh * 0.5);
 
                 let hsl_on = b(e, "hsl_on");
 
-                let gpu_capable = !has_input_lut && !has_look_lut && look == 0 && sharpen.abs() <= 1e-3 && !has_curves && !has_wheels && !hsl_on;
+                let gpu_capable = !has_input_lut && !has_look_lut && look == 0 && sharpen.abs() <= 1e-3 && !has_curves && !hsl_on && wheels_finite;
 
                 let bf = |id: &str| if basic_on { f(e, id, cx) } else { 0.0 };
                 let specular = if is_hdr { bf("hdr_specular") / 100.0 } else { 0.0 };
@@ -561,6 +570,7 @@ impl FxOp {
 
                 FxOp::Lumetri(Box::new(LumetriOp {
                     basic_gs,
+                    adv_gs,
                     gains,
                     exposure,
                     contrast,
@@ -581,6 +591,10 @@ impl FxOp {
                     vround,
                     vfeather,
                     aspect,
+                    wheels_on,
+                    wheel_sh,
+                    wheel_mid,
+                    wheel_hi,
                     gpu_capable,
                 }))
             }
@@ -630,18 +644,22 @@ impl FxOp {
             FxOp::Vignette { amount, midpoint, roundness, feather, target } => fin(&[*amount, *midpoint, *roundness, *feather]) && fin(target),
             FxOp::VideoLimiter { max, comp, axis, warning_color, .. } => *axis <= 3 && max.is_finite() && comp.is_finite() && fin(warning_color),
             FxOp::Lumetri(l) => {
-                let gs_ok = match l.basic_gs {
+                let gs_ok = |gs: filmcraft_color::GradeSpace| match gs {
                     filmcraft_color::GradeSpace::Sdr => true,
                     filmcraft_color::GradeSpace::Pq { white, norm } => fin(&[white, norm]),
                     filmcraft_color::GradeSpace::Hlg { white, gamma } => fin(&[white, gamma]),
                 };
                 l.gpu_capable
-                    && gs_ok
+                    && gs_ok(l.basic_gs)
+                    && gs_ok(l.adv_gs)
                     && fin(&l.gains)
                     && fin(&[l.exposure, l.contrast, l.specular, l.hl, l.sh, l.wh, l.bl, l.sat, l.faded, l.vib])
                     && fin(&l.st)
                     && fin(&l.ht)
                     && fin(&[l.va, l.vmid, l.vround, l.vfeather, l.aspect])
+                    && fin(&l.wheel_sh)
+                    && fin(&l.wheel_mid)
+                    && fin(&l.wheel_hi)
             }
         }
     }
@@ -1026,6 +1044,22 @@ impl FxOp {
                     }
                     basic_gs.decode(v)
                 });
+                if l.wheels_on {
+                    let (adv_gs, wheel_sh, wheel_mid, wheel_hi) = (l.adv_gs, l.wheel_sh, l.wheel_mid, l.wheel_hi);
+                    img.map_rgb(|c, _, _| {
+                        let mut v = adv_gs.encode(c);
+                        let luma = (0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]).clamp(0.0, 1.0);
+                        let wsh = (1.0 - luma).powi(2);
+                        let whi = luma * luma;
+                        let wmid = (1.0 - wsh - whi).max(0.0);
+                        for k in 0..3 {
+                            v[k] += wheel_sh[k] * wsh;
+                            v[k] += wheel_mid[k] * wmid;
+                            v[k] *= 1.0 + wheel_hi[k] * whi;
+                        }
+                        adv_gs.decode(v)
+                    });
+                }
             }
         }
     }

@@ -50,6 +50,7 @@ const OP_MIRROR: u32 = 28u;
 const OP_OFFSET: u32 = 29u;
 const OP_VIDEO_LIMITER: u32 = 30u;
 const OP_LUMETRI: u32 = 31u;
+const OP_LUMETRI_ADV: u32 = 32u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -630,6 +631,28 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
     return gs_decode(v, gs_mode, gs_white, gs_p2);
 }
 
+fn lumetri_adv_op(c: vec3<f32>) -> vec3<f32> {
+    let wheels_on = u.i1.y != 0u;
+    let gs_mode = u.i1.w;
+    let gs_white = u.p0.y;
+    let gs_p2 = u.p0.z;
+
+    var v = gs_encode(c, gs_mode, gs_white, gs_p2);
+    if wheels_on {
+        let l = clamp(luma709(v), 0.0, 1.0);
+        let om = 1.0 - l;
+        let wsh = om * om;
+        let whi = l * l;
+        let wmid = max(1.0 - wsh - whi, 0.0);
+        let sh = u.p1.xyz;
+        let mid = u.p2.xyz;
+        let hi = u.p3.xyz;
+        v = v + sh * wsh + mid * wmid;
+        v = v * (vec3(1.0) + hi * whi);
+    }
+    return gs_decode(v, gs_mode, gs_white, gs_p2);
+}
+
 // One output pixel of every op but the running-sum box blur.
 fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
     let s = size();
@@ -813,6 +836,16 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             }
             let c = o.rgb / a;
             let res = lumetri_op(c, p);
+            return vec4(res * a, a);
+        }
+        case OP_LUMETRI_ADV: {
+            let o = ld(p);
+            let a = o.a;
+            if a <= 1e-6 {
+                return o;
+            }
+            let c = o.rgb / a;
+            let res = lumetri_adv_op(c);
             return vec4(res * a, a);
         }
         default: {

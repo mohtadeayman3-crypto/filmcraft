@@ -52,6 +52,7 @@ const OP_MIRROR: u32 = 28;
 const OP_OFFSET: u32 = 29;
 const OP_VIDEO_LIMITER: u32 = 30;
 const OP_LUMETRI: u32 = 31;
+const OP_LUMETRI_ADV: u32 = 32;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -228,6 +229,31 @@ fn steps(op: &FxOp) -> Vec<Step> {
                 gs_p2,
             ];
             out.push(step(OP_LUMETRI, [l.creative_on as u32, l.vignette_on as u32, gs_mode, 0], &p));
+            if l.wheels_on {
+                let (adv_mode, adv_white, adv_p2) = match l.adv_gs {
+                    filmcraft_color::GradeSpace::Sdr => (0u32, 0.0f32, 0.0f32),
+                    filmcraft_color::GradeSpace::Pq { white, norm } => (1u32, white, norm),
+                    filmcraft_color::GradeSpace::Hlg { white, gamma } => (2u32, white, gamma),
+                };
+                let adv_p = [
+                    1.0,
+                    adv_white,
+                    adv_p2,
+                    0.0,
+                    l.wheel_sh[0],
+                    l.wheel_sh[1],
+                    l.wheel_sh[2],
+                    0.0,
+                    l.wheel_mid[0],
+                    l.wheel_mid[1],
+                    l.wheel_mid[2],
+                    0.0,
+                    l.wheel_hi[0],
+                    l.wheel_hi[1],
+                    l.wheel_hi[2],
+                ];
+                out.push(step(OP_LUMETRI_ADV, [0, l.wheels_on as u32, 0, adv_mode], &adv_p));
+            }
         }
     }
     out
