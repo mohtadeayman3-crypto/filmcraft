@@ -726,7 +726,7 @@ fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
 // ---------- blur kernels ----------
 
 /// Box radii for an n-pass box blur approximating a Gaussian of sigma (Kovesi / Wells).
-fn boxes_for_gauss(sigma: f32, n: usize) -> Vec<usize> {
+pub(crate) fn boxes_for_gauss(sigma: f32, n: usize) -> Vec<usize> {
     let wideal = ((12.0 * sigma * sigma / n as f32) + 1.0).sqrt();
     let mut wl = wideal.floor() as i32;
     if wl % 2 == 0 {
@@ -1224,7 +1224,7 @@ fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
 
 /// The HSL Secondary key of one pixel's grading signal (0…1 per channel).
 #[inline]
-fn hsl_key(v: [f32; 3], hc: f32, hr: f32, smin: f32, lmin: f32, lmax: f32, soft: f32) -> f32 {
+pub(crate) fn hsl_key(v: [f32; 3], hc: f32, hr: f32, smin: f32, lmin: f32, lmax: f32, soft: f32) -> f32 {
     let h = rgb_to_hsl(v[0], v[1], v[2]);
     let dh = (h[0] - hc).abs().min(1.0 - (h[0] - hc).abs());
     let mh = 1.0 - ((dh - hr / 2.0) / soft).clamp(0.0, 1.0);
@@ -1312,7 +1312,7 @@ fn hsl_secondary(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
 
 /// Median of the `(2r+1)²` neighbourhood of every sample of a single-channel plane (edges
 /// clamped).
-fn median_filter(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+pub(crate) fn median_filter(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
     let mut out = vec![0f32; src.len()];
     out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
         let mut win: Vec<f32> = Vec::with_capacity((2 * r + 1) * (2 * r + 1));
@@ -1330,8 +1330,12 @@ fn median_filter(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
 }
 
 /// Gaussian blur of a single-channel plane (three box passes per axis, edges clamped).
-fn blur_plane(p: &mut [f32], w: usize, h: usize, sigma: f32) {
-    let radii = boxes_for_gauss(sigma, 3);
+pub(crate) fn blur_plane(p: &mut [f32], w: usize, h: usize, sigma: f32) {
+    let radii: Vec<u32> = boxes_for_gauss(sigma, 3).into_iter().map(|r| r as u32).collect();
+    blur_plane_boxes(p, w, h, &radii);
+}
+
+pub(crate) fn blur_plane_boxes(p: &mut [f32], w: usize, h: usize, radii: &[u32]) {
     let pass = |p: &mut [f32], w: usize, h: usize, r: usize| {
         if r == 0 {
             return;
@@ -1357,12 +1361,12 @@ fn blur_plane(p: &mut [f32], w: usize, h: usize, sigma: f32) {
         }
         t
     };
-    for &r in &radii {
-        pass(p, w, h, r);
+    for &r in radii {
+        pass(p, w, h, r as usize);
     }
     let mut t = transpose(p, w, h);
-    for &r in &radii {
-        pass(&mut t, h, w, r);
+    for &r in radii {
+        pass(&mut t, h, w, r as usize);
     }
     p.copy_from_slice(&transpose(&t, h, w));
 }
@@ -1567,6 +1571,34 @@ mod lumetri_cpu_parity_tests {
             ("look_4", vec![("look", ParamValue::Choice(4)), ("look_intensity", fl(100.0))]),
             ("look_6_and_sharpen", vec![("look", ParamValue::Choice(6)), ("look_intensity", fl(80.0)), ("sharpen", fl(35.0))]),
             ("negative_sharpen", vec![("sharpen", fl(-45.0))]),
+            (
+                "hsl_secondary_correction",
+                vec![
+                    ("hsl_on", ParamValue::Bool(true)),
+                    ("hsl_hue", fl(30.0)),
+                    ("hsl_hue_range", fl(60.0)),
+                    ("hsl_sat_min", fl(15.0)),
+                    ("hsl_luma_min", fl(10.0)),
+                    ("hsl_luma_max", fl(90.0)),
+                    ("hsl_soft", fl(25.0)),
+                    ("hsl_temp", fl(30.0)),
+                    ("hsl_tint", fl(-20.0)),
+                    ("hsl_sat", fl(130.0)),
+                    ("hsl_hue_shift", fl(45.0)),
+                ],
+            ),
+            (
+                "hsl_secondary_denoise_and_blur",
+                vec![
+                    ("hsl_on", ParamValue::Bool(true)),
+                    ("hsl_hue", fl(0.0)),
+                    ("hsl_hue_range", fl(50.0)),
+                    ("hsl_denoise", fl(75.0)),
+                    ("hsl_blur", fl(20.0)),
+                    ("hsl_hue_shift", fl(120.0)),
+                    ("sharpen", fl(25.0)),
+                ],
+            ),
         ];
 
         let (w, h) = (67usize, 41usize);

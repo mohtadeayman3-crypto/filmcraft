@@ -53,6 +53,9 @@ const OP_OFFSET: u32 = 29;
 const OP_VIDEO_LIMITER: u32 = 30;
 const OP_LUMETRI: u32 = 31;
 const OP_LUMETRI_ADV: u32 = 32;
+const OP_LUMETRI_HSL_KEY: u32 = 33;
+const OP_LUMETRI_HSL_DENOISE: u32 = 34;
+const OP_LUMETRI_HSL_APPLY: u32 = 35;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -231,12 +234,12 @@ fn steps(op: &FxOp) -> Vec<Step> {
                 gs_p2,
             ];
             out.push(step(OP_LUMETRI, [l.creative_on as u32, l.vignette_on as u32, gs_mode, 0], &p));
+            let (adv_mode, adv_white, adv_p2) = match l.adv_gs {
+                filmcraft_color::GradeSpace::Sdr => (0u32, 0.0f32, 0.0f32),
+                filmcraft_color::GradeSpace::Pq { white, norm } => (1u32, white, norm),
+                filmcraft_color::GradeSpace::Hlg { white, gamma } => (2u32, white, gamma),
+            };
             if l.look > 0 || l.wheels_on || l.curve_mask != 0 {
-                let (adv_mode, adv_white, adv_p2) = match l.adv_gs {
-                    filmcraft_color::GradeSpace::Sdr => (0u32, 0.0f32, 0.0f32),
-                    filmcraft_color::GradeSpace::Pq { white, norm } => (1u32, white, norm),
-                    filmcraft_color::GradeSpace::Hlg { white, gamma } => (2u32, white, gamma),
-                };
                 let adv_p = [
                     l.look_k,
                     adv_white,
@@ -259,6 +262,35 @@ fn steps(op: &FxOp) -> Vec<Step> {
                     adv.lut = Some(l.curves.clone());
                 }
                 out.push(adv);
+            }
+            if l.hsl_on {
+                let hsl_p =
+                    [l.hsl_hc, l.hsl_hr, l.hsl_smin, l.hsl_lmin, l.hsl_lmax, l.hsl_soft, adv_white, adv_p2, l.hsl_temp, l.hsl_tint, l.hsl_sat, l.hsl_shift];
+                let has_denoise = l.hsl_denoise > 0.0 && l.hsl_denoise_r > 0;
+                let has_blur = l.hsl_blur_radii.iter().any(|r| *r > 0);
+                if has_denoise || has_blur {
+                    let mut key_s = step(OP_LUMETRI_HSL_KEY, [adv_mode, 0, 0, 0], &hsl_p[..8]);
+                    key_s.unsharp_blur = true;
+                    out.push(key_s);
+                    if has_denoise {
+                        let mut den_s = step(OP_LUMETRI_HSL_DENOISE, [l.hsl_denoise_r, 0, 0, 0], &[l.hsl_denoise.min(1.0)]);
+                        den_s.unsharp_blur = true;
+                        out.push(den_s);
+                    }
+                    if has_blur {
+                        let start = out.len();
+                        boxes(&l.hsl_blur_radii, false, true, &mut out);
+                        boxes(&l.hsl_blur_radii, true, true, &mut out);
+                        for s in &mut out[start..] {
+                            s.unsharp_blur = true;
+                        }
+                    }
+                    let mut app_s = step(OP_LUMETRI_HSL_APPLY, [l.hsl_show_mask, adv_mode, 1, 0], &hsl_p);
+                    app_s.combine = true;
+                    out.push(app_s);
+                } else {
+                    out.push(step(OP_LUMETRI_HSL_APPLY, [l.hsl_show_mask, adv_mode, 0, 0], &hsl_p));
+                }
             }
             if l.sharpen_amount.abs() > 1e-3 {
                 let start = out.len();

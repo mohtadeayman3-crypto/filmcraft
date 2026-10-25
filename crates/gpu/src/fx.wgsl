@@ -51,6 +51,9 @@ const OP_OFFSET: u32 = 29u;
 const OP_VIDEO_LIMITER: u32 = 30u;
 const OP_LUMETRI: u32 = 31u;
 const OP_LUMETRI_ADV: u32 = 32u;
+const OP_LUMETRI_HSL_KEY: u32 = 33u;
+const OP_LUMETRI_HSL_DENOISE: u32 = 34u;
+const OP_LUMETRI_HSL_APPLY: u32 = 35u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -770,6 +773,25 @@ fn lumetri_adv_op(c: vec3<f32>) -> vec3<f32> {
     return gs_decode(v, gs_mode, gs_white, gs_p2);
 }
 
+fn lumetri_hsl_unit(c: vec3<f32>, gs_mode: u32, gs_white: f32, gs_p2: f32) -> vec3<f32> {
+    let v = gs_encode(c, gs_mode, gs_white, gs_p2);
+    if gs_mode != 0u {
+        let m = max(max(max(v.x, v.y), v.z), 1.0);
+        return max(v / m, vec3(0.0));
+    }
+    return clamp(v, vec3(0.0), vec3(1.0));
+}
+
+fn lumetri_hsl_key(u_rgb: vec3<f32>, hc: f32, hr: f32, smin: f32, lmin: f32, lmax: f32, soft: f32) -> f32 {
+    let h = rgb_to_hsl(u_rgb);
+    let d = abs(h.x - hc);
+    let dh = min(d, 1.0 - d);
+    let mh = 1.0 - clamp((dh - hr / 2.0) / soft, 0.0, 1.0);
+    let ms = clamp((h.y - smin) / soft, 0.0, 1.0);
+    let ml = min(clamp((h.z - lmin) / soft, 0.0, 1.0), clamp((lmax - h.z) / soft, 0.0, 1.0));
+    return mh * ms * ml;
+}
+
 // One output pixel of every op but the running-sum box blur.
 fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
     let s = size();
@@ -964,6 +986,85 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             let c = o.rgb / a;
             let res = lumetri_adv_op(c);
             return vec4(res * a, a);
+        }
+        case OP_LUMETRI_HSL_KEY: {
+            let o = ld(p);
+            if o.a <= 1e-6 {
+                return vec4(0.0, 0.0, 0.0, 1.0);
+            }
+            let u_rgb = lumetri_hsl_unit(o.rgb / o.a, u.i1.x, u.p1.z, u.p1.w);
+            let m = lumetri_hsl_key(u_rgb, u.p0.x, u.p0.y, u.p0.z, u.p0.w, u.p1.x, u.p1.y);
+            return vec4(m, m, m, 1.0);
+        }
+        case OP_LUMETRI_HSL_DENOISE: {
+            let r = clamp(i32(u.i1.x), 1, 4);
+            let denoise = u.p0.x;
+            let m0 = ld(p).x;
+            var win: array<f32, 81>;
+            var n = 0;
+            let y0 = max(p.y - r, 0);
+            let y1 = min(p.y + r + 1, s.y);
+            let x0 = max(p.x - r, 0);
+            let x1 = min(p.x + r + 1, s.x);
+            for (var yy = y0; yy < y1; yy++) {
+                for (var xx = x0; xx < x1; xx++) {
+                    win[n] = ld(vec2(xx, yy)).x;
+                    n++;
+                }
+            }
+            for (var i = 1; i < n; i++) {
+                let key = win[i];
+                var j = i;
+                while j > 0 && win[j - 1] > key {
+                    win[j] = win[j - 1];
+                    j--;
+                }
+                win[j] = key;
+            }
+            let med = win[n / 2];
+            let m = m0 + (med - m0) * denoise;
+            return vec4(m, m, m, 1.0);
+        }
+        case OP_LUMETRI_HSL_APPLY: {
+            let show_mask = u.i1.x;
+            let gs_mode = u.i1.y;
+            let from_aux = u.i1.z != 0u;
+            let o = select(ld(p), textureLoad(aux, p, 0), from_aux);
+            let a = o.a;
+            if a <= 1e-6 {
+                return o;
+            }
+            let c = o.rgb / a;
+            let gs_white = u.p1.z;
+            let gs_p2 = u.p1.w;
+            let v = gs_encode(c, gs_mode, gs_white, gs_p2);
+            let u_rgb = lumetri_hsl_unit(c, gs_mode, gs_white, gs_p2);
+            var m: f32;
+            if from_aux {
+                m = ld(p).x;
+            } else {
+                m = lumetri_hsl_key(u_rgb, u.p0.x, u.p0.y, u.p0.z, u.p0.w, u.p1.x, u.p1.y);
+            }
+            let scale = select(1.0, max(max(max(v.x, v.y), v.z), 1.0), gs_mode != 0u);
+            var out_v: vec3<f32>;
+            if show_mask == 1u {
+                let g = rgb_to_hsl(u_rgb).z;
+                out_v = vec3(g) + (u_rgb - vec3(g)) * m;
+            } else if show_mask == 2u {
+                out_v = u_rgb * m;
+            } else if show_mask == 3u {
+                out_v = vec3(m);
+            } else {
+                var hh = rgb_to_hsl(u_rgb);
+                hh.x = fract_euclid(hh.x + u.p2.w);
+                hh.y = clamp(hh.y * u.p2.z, 0.0, 1.0);
+                var c2 = hsl_to_rgb(hh.x, hh.y, hh.z);
+                c2.x *= 1.0 + 0.25 * u.p2.x;
+                c2.z *= 1.0 - 0.25 * u.p2.x;
+                c2.y *= 1.0 - 0.2 * u.p2.y;
+                out_v = (u_rgb + (c2 - u_rgb) * m) * scale;
+            }
+            return vec4(gs_decode(out_v, gs_mode, gs_white, gs_p2) * a, a);
         }
         default: {
             let o = ld(p);

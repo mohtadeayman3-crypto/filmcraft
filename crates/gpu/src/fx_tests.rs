@@ -397,6 +397,56 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
             ],
             false,
         ),
+        (
+            "lumetri",
+            vec![
+                ("hsl_on", ParamValue::Bool(true)),
+                ("hsl_hue", fl(30.0)),
+                ("hsl_hue_range", fl(60.0)),
+                ("hsl_sat_min", fl(15.0)),
+                ("hsl_luma_min", fl(10.0)),
+                ("hsl_luma_max", fl(90.0)),
+                ("hsl_soft", fl(25.0)),
+                ("hsl_temp", fl(30.0)),
+                ("hsl_tint", fl(-20.0)),
+                ("hsl_sat", fl(130.0)),
+                ("hsl_hue_shift", fl(45.0)),
+            ],
+            true,
+        ),
+        ("lumetri", vec![("hsl_on", ParamValue::Bool(true)), ("hsl_hue", fl(120.0)), ("hsl_hue_range", fl(80.0)), ("hsl_show_mask", ch(1))], true),
+        ("lumetri", vec![("hsl_on", ParamValue::Bool(true)), ("hsl_hue", fl(210.0)), ("hsl_hue_range", fl(80.0)), ("hsl_show_mask", ch(2))], true),
+        ("lumetri", vec![("hsl_on", ParamValue::Bool(true)), ("hsl_hue", fl(0.0)), ("hsl_hue_range", fl(60.0)), ("hsl_show_mask", ch(3))], true),
+        (
+            "lumetri",
+            vec![
+                ("hsl_on", ParamValue::Bool(true)),
+                ("hsl_hue", fl(0.0)),
+                ("hsl_hue_range", fl(50.0)),
+                ("hsl_denoise", fl(100.0)),
+                ("hsl_hue_shift", fl(120.0)),
+            ],
+            true,
+        ),
+        (
+            "lumetri",
+            vec![("hsl_on", ParamValue::Bool(true)), ("hsl_hue", fl(40.0)), ("hsl_hue_range", fl(70.0)), ("hsl_blur", fl(25.0)), ("hsl_sat", fl(40.0))],
+            true,
+        ),
+        (
+            "lumetri",
+            vec![
+                ("hsl_on", ParamValue::Bool(true)),
+                ("hsl_hue", fl(20.0)),
+                ("hsl_hue_range", fl(65.0)),
+                ("hsl_denoise", fl(60.0)),
+                ("hsl_blur", fl(18.0)),
+                ("hsl_temp", fl(-35.0)),
+                ("hsl_hue_shift", fl(90.0)),
+                ("sharpen", fl(30.0)),
+            ],
+            true,
+        ),
     ]
 }
 
@@ -575,6 +625,10 @@ fn hostile_parameters_are_bounded() {
         effect("lumetri", &[("hue_vs_sat", ParamValue::Curve(vec![[f32::INFINITY, 0.5]]))]),
         effect("lumetri", &[("look_intensity", fl(f64::NAN))]),
         effect("lumetri", &[("sharpen", fl(f64::INFINITY))]),
+        effect("lumetri", &[("hsl_on", ParamValue::Bool(true)), ("hsl_hue", fl(f64::NAN))]),
+        effect("lumetri", &[("hsl_on", ParamValue::Bool(true)), ("hsl_denoise", fl(f64::INFINITY))]),
+        effect("lumetri", &[("hsl_on", ParamValue::Bool(true)), ("hsl_blur", fl(f64::NAN))]),
+        effect("lumetri", &[("hsl_on", ParamValue::Bool(true)), ("hsl_temp", fl(f64::NAN))]),
     ];
     for e in &nan {
         let op = FxOp::eval(e, &cx(Tick::ZERO, 1.0), w, h);
@@ -659,10 +713,10 @@ fn lumetri_unsupported_sections_fall_back() {
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
     assert!(op.as_ref().is_some_and(FxOp::gpu_ok));
 
-    // HSL secondary on
+    // HSL secondary on is GPU-capable (C1.5)
     let e = effect("lumetri", &[("hsl_on", ParamValue::Bool(true))]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h);
-    assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
+    assert!(op.as_ref().is_some_and(FxOp::gpu_ok));
 
     // HDR working space is GPU-capable for basic correction
     let e = effect("lumetri", &[]);

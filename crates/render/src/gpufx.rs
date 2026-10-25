@@ -211,6 +211,21 @@ pub struct LumetriOp {
     pub curves: [Option<Vec<f32>>; 9],
     pub look: u32,
     pub look_k: f32,
+    pub hsl_on: bool,
+    pub hsl_hc: f32,
+    pub hsl_hr: f32,
+    pub hsl_smin: f32,
+    pub hsl_lmin: f32,
+    pub hsl_lmax: f32,
+    pub hsl_soft: f32,
+    pub hsl_show_mask: u32,
+    pub hsl_temp: f32,
+    pub hsl_tint: f32,
+    pub hsl_sat: f32,
+    pub hsl_shift: f32,
+    pub hsl_denoise: f32,
+    pub hsl_denoise_r: u32,
+    pub hsl_blur_radii: Vec<u32>,
     pub sharpen_rx: Vec<u32>,
     pub sharpen_ry: Vec<u32>,
     pub sharpen_amount: f32,
@@ -573,8 +588,42 @@ impl FxOp {
                 let wheel_hi = wh.map(|x| x * 0.5 + lh * 0.5);
 
                 let hsl_on = b(e, "hsl_on");
+                let raw_hc = f(e, "hsl_hue", cx);
+                let raw_hr = f(e, "hsl_hue_range", cx);
+                let raw_smin = f(e, "hsl_sat_min", cx);
+                let raw_lmin = f(e, "hsl_luma_min", cx);
+                let raw_lmax = f(e, "hsl_luma_max", cx);
+                let raw_soft = f(e, "hsl_soft", cx);
+                let raw_denoise = f(e, "hsl_denoise", cx);
+                let raw_blur = f(e, "hsl_blur", cx);
+                let hsl_finite = [raw_hc, raw_hr, raw_smin, raw_lmin, raw_lmax, raw_soft, raw_denoise, raw_blur].iter().all(|x| x.is_finite());
+                let hsl_hc = raw_hc / 360.0;
+                let hsl_hr = (raw_hr / 360.0).max(1e-3);
+                let hsl_smin = raw_smin / 100.0;
+                let hsl_lmin = raw_lmin / 100.0;
+                let hsl_lmax = raw_lmax / 100.0;
+                let hsl_soft = (raw_soft / 100.0 * 0.3).max(0.01);
+                let hsl_show_mask = choice(e, "hsl_show_mask");
+                let hsl_temp = f(e, "hsl_temp", cx) / 100.0;
+                let hsl_tint = f(e, "hsl_tint", cx) / 100.0;
+                let hsl_sat = f(e, "hsl_sat", cx) / 100.0;
+                let hsl_shift = f(e, "hsl_hue_shift", cx) / 360.0;
+                let hsl_denoise = if raw_denoise.is_finite() { raw_denoise.clamp(0.0, 100.0) / 100.0 } else { raw_denoise };
+                let hsl_denoise_r = if hsl_on && hsl_denoise.is_finite() && hsl_denoise > 0.0 && px_scale_ok {
+                    ((1.0 + 2.0 * hsl_denoise) * cx.px_scale).round().max(1.0) as u32
+                } else {
+                    0
+                };
+                let hsl_blur = if raw_blur.is_finite() { raw_blur.clamp(0.0, 100.0) / 100.0 } else { raw_blur };
+                let hsl_sigma = if hsl_on && hsl_blur.is_finite() && hsl_blur > 0.0 && px_scale_ok {
+                    (hsl_blur * 20.0 * cx.px_scale).min(w.max(h).max(8) as f32 * 2.0)
+                } else {
+                    0.0
+                };
+                let hsl_blur_radii =
+                    if hsl_sigma >= 0.3 { crate::effects::boxes_for_gauss(hsl_sigma, 3).into_iter().map(|r| r as u32).collect() } else { Vec::new() };
 
-                let gpu_capable = !has_input_lut && !has_look_lut && !hsl_on && wheels_finite && curves_finite && px_scale_ok;
+                let gpu_capable = !has_input_lut && !has_look_lut && wheels_finite && curves_finite && px_scale_ok && hsl_finite && hsl_denoise_r <= 4;
 
                 let bf = |id: &str| if basic_on { f(e, id, cx) } else { 0.0 };
                 let specular = if is_hdr { bf("hdr_specular") / 100.0 } else { 0.0 };
@@ -629,6 +678,21 @@ impl FxOp {
                     curves,
                     look,
                     look_k,
+                    hsl_on,
+                    hsl_hc,
+                    hsl_hr,
+                    hsl_smin,
+                    hsl_lmin,
+                    hsl_lmax,
+                    hsl_soft,
+                    hsl_show_mask,
+                    hsl_temp,
+                    hsl_tint,
+                    hsl_sat,
+                    hsl_shift,
+                    hsl_denoise,
+                    hsl_denoise_r,
+                    hsl_blur_radii,
                     sharpen_rx,
                     sharpen_ry,
                     sharpen_amount,
@@ -698,7 +762,22 @@ impl FxOp {
                     && fin(&l.wheel_mid)
                     && fin(&l.wheel_hi)
                     && l.curves.iter().flatten().all(|c| c.len() == 1024 && fin(c))
-                    && fin(&[l.look_k, l.sharpen_amount])
+                    && fin(&[
+                        l.look_k,
+                        l.sharpen_amount,
+                        l.hsl_hc,
+                        l.hsl_hr,
+                        l.hsl_smin,
+                        l.hsl_lmin,
+                        l.hsl_lmax,
+                        l.hsl_soft,
+                        l.hsl_temp,
+                        l.hsl_tint,
+                        l.hsl_sat,
+                        l.hsl_shift,
+                        l.hsl_denoise,
+                    ])
+                    && l.hsl_denoise_r <= 4
             }
         }
     }
@@ -1156,6 +1235,75 @@ impl FxOp {
                             });
                         }
                         adv_gs.decode(v)
+                    });
+                }
+                if l.hsl_on {
+                    use crate::effects::{blur_plane_boxes, hsl_key, median_filter};
+                    let gs = l.adv_gs;
+                    let adv_hdr = gs.is_hdr();
+                    let (hc, hr, smin, lmin, lmax, soft, show_mask, htemp, htint, hsat, hshift, denoise, denoise_r) = (
+                        l.hsl_hc,
+                        l.hsl_hr,
+                        l.hsl_smin,
+                        l.hsl_lmin,
+                        l.hsl_lmax,
+                        l.hsl_soft,
+                        l.hsl_show_mask,
+                        l.hsl_temp,
+                        l.hsl_tint,
+                        l.hsl_sat,
+                        l.hsl_shift,
+                        l.hsl_denoise,
+                        l.hsl_denoise_r as usize,
+                    );
+                    let (iw, ih) = (img.w, img.h);
+                    let unit = |c: [f32; 3]| {
+                        let v = gs.encode(c);
+                        if adv_hdr {
+                            let m = v[0].max(v[1]).max(v[2]).max(1.0);
+                            v.map(|q| (q / m).max(0.0))
+                        } else {
+                            v.map(|q| q.clamp(0.0, 1.0))
+                        }
+                    };
+                    let mut mask: Vec<f32> = img
+                        .px
+                        .par_chunks(4)
+                        .map(|p| if p[3] <= 1e-6 { 0.0 } else { hsl_key(unit(Image::unpremul([p[0], p[1], p[2], p[3]])), hc, hr, smin, lmin, lmax, soft) })
+                        .collect();
+                    if denoise > 0.0 && denoise_r > 0 {
+                        let med = median_filter(&mask, iw, ih, denoise_r);
+                        mask.iter_mut().zip(med).for_each(|(m, d)| *m += (d - *m) * denoise.min(1.0));
+                    }
+                    if !l.hsl_blur_radii.is_empty() {
+                        blur_plane_boxes(&mut mask, iw, ih, &l.hsl_blur_radii);
+                    }
+                    let mask = &mask;
+                    img.map_rgb(|c, x, y| {
+                        let m = mask[y * iw + x];
+                        let v = gs.encode(c);
+                        let u = unit(c);
+                        let scale = if adv_hdr { v[0].max(v[1]).max(v[2]).max(1.0) } else { 1.0 };
+                        let out = match show_mask {
+                            1 => {
+                                let g = rgb_to_hsl(u[0], u[1], u[2])[2];
+                                [g + (u[0] - g) * m, g + (u[1] - g) * m, g + (u[2] - g) * m]
+                            }
+                            2 => u.map(|q| q * m),
+                            3 => [m, m, m],
+                            _ => {
+                                let mut hh = rgb_to_hsl(u[0], u[1], u[2]);
+                                hh[0] = (hh[0] + hshift).rem_euclid(1.0);
+                                hh[1] = (hh[1] * hsat).clamp(0.0, 1.0);
+                                let mut c2 = hsl_to_rgb(hh[0], hh[1], hh[2]);
+                                c2[0] *= 1.0 + 0.25 * htemp;
+                                c2[2] *= 1.0 - 0.25 * htemp;
+                                c2[1] *= 1.0 - 0.2 * htint;
+                                [u[0] + (c2[0] - u[0]) * m, u[1] + (c2[1] - u[1]) * m, u[2] + (c2[2] - u[2]) * m]
+                            }
+                        };
+                        let out = if show_mask == 0 { out.map(|q| q * scale) } else { out };
+                        gs.decode(out)
                     });
                 }
                 if l.sharpen_amount.abs() > 1e-3 {
