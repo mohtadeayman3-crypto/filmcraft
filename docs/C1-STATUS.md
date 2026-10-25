@@ -9,7 +9,8 @@
 - **C1.4 (`4479d17e`):** GPU Lumetri Creative Looks (`1..=8` procedural looks + `look_intensity`) & Creative Sharpen (`OP_BOX` + `OP_UNSHARP` reuse).
 - **C1.5 (`9f29a7e8`):** GPU Lumetri HSL Secondary with Matte Refinement (`OP_LUMETRI_HSL_KEY`, `OP_LUMETRI_HSL_DENOISE` 2D median filter, `OP_BOX` separable blur, `OP_LUMETRI_HSL_APPLY` with `hsl_show_mask` modes `0..=3`).
 - **C1.6 (`0ce7779c`):** GPU Lumetri Vignette extremes (`+100` circle, `-100` oval, `0` feather, positive amount), full 6-section Lumetri chain parity tests (`SDR` and `HDR`), and Phase 3 extended 4K GPU benchmark (`crates/gpu/examples/lumetri_bench.rs`, keeping `crates/render/examples/lumetri_bench.rs` untouched).
-- **C1.9:** GPU effects (`LayerFx`) for CPU-decoded log/camera clips (such as Sony `S-Log3 / S-Gamut3.Cine`) in `crates/render/src/plan.rs`.
+- **C1.9 (`acb7f49e`):** GPU effects (`LayerFx`) for CPU-decoded log/camera clips (such as Sony `S-Log3 / S-Gamut3.Cine`) in `crates/render/src/plan.rs`.
+- **C1.8:** Real-footage 4K Sony ZV-E10 S-Log3 (`C1102.MP4`) CPU vs GPU A/B check (`max = 1/255`, `mean = 0.0169/255`, `95.02%` bitwise identical, visually identical) and live desktop app GPU playback verification (`25.0 fps` clip at `60.17 fps` UI repaint, `0` dropped frames). See [`docs/c1-ab/README.md`](c1-ab/README.md).
 
 ## Parity Tolerance Notes
 
