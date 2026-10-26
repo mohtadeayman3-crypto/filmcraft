@@ -42,10 +42,11 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
 - [x] Isolated OCIO oracle setup in `D:\FilmCraftX-tools\` (Python 3.12, OpenColorIO 2.6.0, NumPy 2.5.4)
 - [x] Item 3: Chroma siting empirical test completed and confirmed (+0.25 chroma texel shift)
 - [x] Item 4: Export default investigation and C1102.MP4 benchmark complete
+- [x] Item 5: ACEScg pipeline wiring design summary complete
 
 ## Next
 
-- Item 5: ACEScg pipeline wiring design summary (15 lines)
+Awaiting user approval of Item 5 design summary before proceeding to C2.3 / ACES pipeline integration.
 
 ## C2.1 Pure-Rust ACES Core Completion Summary (2026-10-26)
 
@@ -183,6 +184,25 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
     3. GPU produces visually superior, smooth bilinear chroma reconstruction rather than CPU nearest-neighbor stair-stepping.
     4. Deterministic bit-level reproducibility remains selectable via explicit `Off`.
   - Default is kept as `Off` for now; no changes made yet.
+
+## C2.3 Stage Design: Wiring ACEScg Working Space & Camera IDTs (15 Lines)
+
+1. **Working Space Option**: Add `WorkingSpace::AcesCg` (AP1 linear) to `ColorPipeline` in `crates/color/src/spaces.rs`, preserving `Rec709`, `Rec2100Pq`, `Rec2100Hlg` unchanged.
+2. **Project Schema & Migration**: Add `"acesCg"` to sequence settings in `crates/project/src/lib.rs`. Backwards compatibility is automatic via `#[serde(default)]` defaulting to `Rec709`, requiring no schema bump or migration script.
+3. **Camera IDT Ingestion**: In `crates/color/src/transform.rs`, wire camera log curves and gamuts directly to AP1 linear (`InputTransform::aces_idt(cs)`), bypassing legacy SDR tone mapping and gamut compression.
+4. **Grading Space Transfer**: In `crates/render/src/effects.rs` and `crates/gpu/src/fx.wgsl`, execute grading operations in `ACEScct` (AMPAS S-2016-001) when ACEScg is active; non-ACES sequences remain bit-for-bit identical on legacy curves.
+5. **Output / Display Resolve**: In `crates/color/src/transform.rs` and `crates/gpu/src/composite.wgsl`, resolve ACEScg to Rec.709 display via ACES 2.0 SDR Output Transform during the sequence resolve pass.
+6. **Chromatic Adaptation Choice [To Verify]**: Bradford CAT versus CAT02 when converting camera sensor gamuts (D65) to ACES AP0/AP1 white point ($[0.32168, 0.33767]$).
+7. **Verification Method**: Compare derived $3\times 3$ IDT matrices against published camera manufacturer matrices (Sony S-Log3, ARRI LogC3/4, Canon C-Log2/3, Panasonic V-Log, RED) and the isolated OCIO 2.6 oracle in `D:\FilmCraftX-tools\`.
+8. **Files Touched (`filmcraft-color`)**: `crates/color/src/spaces.rs` (`WorkingSpace::AcesCg`), `crates/color/src/transform.rs` (`InputTransform` IDT, `OutputTransform`).
+9. **Files Touched (`filmcraft-render`)**: `crates/render/src/colorman.rs` (`source_space`, `needs_management`, `gpu_input`), `crates/render/src/effects.rs` (ACEScct grading transfer).
+10. **Files Touched (`filmcraft-gpu`)**: `crates/gpu/src/composite.wgsl` (IDT decode & display resolve shader), `crates/gpu/src/fx.wgsl` (ACEScct tone/wheels math), `crates/gpu/src/lib.rs`.
+11. **Files Touched (`filmcraft-project` & UI)**: `crates/project/src/lib.rs` (schema parsing), `crates/ui-egui/src/panels/sequence_settings.rs` (Working Space dropdown: Rec.709 / ACEScg).
+12. **Test Plan (Unit Tests)**: Numeric parity tests verifying camera IDT matrices against AMPAS/vendor reference numbers ($< 10^{-6}$) and OCIO 2.6 test vector fixtures.
+13. **Test Plan (Regression)**: Automated parity test guaranteeing existing `Rec709` and HDR projects produce 100% bit-for-bit identical output on both CPU and GPU paths.
+14. **Risks (Out-of-Gamut Scene Values)**: Highly saturated camera primaries mapped to AP1 can yield negative tristimulus values; mitigate by incorporating ACES Reference Gamut Compression (RGC).
+15. **Risks (Resolve Pipeline Overhead)**: Applying display transforms across intermediate compositing passes; mitigate by keeping intermediate buffers scene-linear ACEScg and resolving display only at output.
+
 
 
 
