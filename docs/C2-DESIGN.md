@@ -627,3 +627,63 @@ Effect id `colorSpaceTransform` (Effects ▸ Color Correction): params `inputSpa
 stages) with parity tests; documented in `build_effects()` agent docs.
 
 ---
+
+## 9. Risks and mitigations
+
+| # | Risk | Mitigation |
+|---|---|---|
+| R1 | **Clean-room / licence**: the ACES 2.0 documentation may not contain every constant; the normative detail lives in AMPAS CTL. | Implement from documentation; CTL/OCIO only as black-box oracles; if a gap remains, ask (Q1) and record an ADR before reading any reference source. |
+| R2 | **ACES 2.0 complexity and GPU cost** (CAM per pixel, gamut-boundary search). | Precompute per-display tables on the CPU; analytic WGSL reading a small table texture; 3D-LUT fallback with documented tolerance; benchmark in C2.8 against the 4K real-time target. |
+| R3 | **Constants transcribed wrong** (RGC, OT, vendor IDTs). | Everything "to verify" is checked against the cited document at implementation time; tests pin values with citations; derived matrices are cross-checked against published ones. |
+| R4 | **Legacy regressions** (white-point refactor, `GradeSpace` new mode, schema). | Bit-identical pin tests (§6.1); legacy is the default; new paths are additive. |
+| R5 | **Lumetri feel in ACEScct** (controls tuned for sRGB signal; `luma709` hard-coded). | Document; AP1 luma in ACES mode only; real retuning and log-wheel controls in C3. |
+| R6 | **Display-referred media looks wrong** until the inverse OT exists. | Linear option as stand-in (C2.5) clearly labelled; inverse OT in C2.9 becomes the default. |
+| R7 | **CAT choice mismatch** with other ACES tools (Bradford vs CAT02 vs vendor matrices) → small colour differences in interchange. | Make the CAT a parameter internally; document; compare against vendor IDTs (§6.2); Q3. |
+| R8 | **f16 accumulator** precision/range for ACEScg (negatives, highlights). | f16 range suffices (65 504); RGC removes most negatives; parity tests include out-of-gamut colours; switch accumulator to `Rgba32Float` only if measured necessary. |
+| R9 | **LUTs** (Lumetri input/look LUTs) assume Rec.709 or camera-log input, not ACEScg/ACEScct. | In ACES mode, LUT stages receive the ACEScct signal; document; per-LUT "input space" option is a follow-up (C6 looks). Built-in camera → Rec.709 LUTs are not offered in ACES mode (the IDT does that job). |
+| R10 | **Scopes / colour pickers / keyers** read working values that are now scene-linear AP1. | Scopes default to the output-transformed signal; keyers keep working on their existing signal via the grading space; audit list in C2.11. |
+| R11 | **Performance of the CPU fallback** (no GPU, scopes `Target::Sequence`) with an extra OT per pixel. | CPU OT uses precomputed tables + Rayon; scopes at reduced size (C1 measurements). |
+| R12 | **"ACES" naming** (Academy trademark / logo programme). | Descriptive use only, no logo, no certification claim. |
+| R13 | **Quota/time**: C2 is large. | Staged plan below; every stage is independently useful and green. |
+
+---
+
+## 10. Staged plan
+
+Each stage is one or a few commits with its own tests, `cargo xtask ci` green, docs updated
+(crate README, `docs/C2-STATUS.md`).
+
+| Stage | Content | Depends on | User-visible |
+|---|---|---|---|
+| **C2.1** | `Gamut::white()`, Bradford CAT in `gamut_matrix` (only when whites differ), `Gamut::Ap0/Ap1`, ACEScct / ACEScc curves, ACES `ColorSpace`s (CPU), §6.2 reference tests, legacy pin tests. | — | no (library) |
+| **C2.2** | **Camera log on the GPU**: decode-table texture in the source shader, gamut compression in WGSL, `gpu_params()` for log, `gpu_input` for log Y'CbCr; plan keeps raw YUV; parity + benchmark. | — | yes: faster log playback in legacy |
+| **C2.3** | GPU display/output transform for non-plain legacy pipelines (HDR working, wide gamut); drop the `is_plain()` gate in `gpu_input`. | C2.2 | yes: HDR/wide-gamut sequences on GPU |
+| **C2.4** | Schema: `ColorManagement`, `AcesSettings`, schema bump + fixture test, `sequence.colorManagement` / `sequence.colorInfo` commands, docs/project-files.md. | C2.1 | commands only |
+| **C2.5** | ACES working pipeline: IDTs into ACEScg (CPU + GPU), RGC (verified constants), `GradeSpace::Acescct` (CPU + WGSL), option-C view (FilmCraft display transform from ACEScg), display-referred media "linear" stand-in. | C2.1–C2.4 | yes: ACES mode (FilmCraft view) |
+| **C2.6** | ACES 2.0 Output Transform CPU reference (f64): SDR Rec.709 100 nit; oracle table (after Q1); property tests. | C2.5, Q1 | yes: "ACES 2.0" view (CPU) |
+| **C2.7** | OT presets PQ 1000 and HLG 1000; export encoding and export override; HDR metadata. | C2.6 | yes: ACES HDR delivery |
+| **C2.8** | OT on the GPU (analytic + tables; LUT fallback if needed); parity; 4K benchmark. | C2.3, C2.6 | yes: real-time ACES |
+| **C2.9** | Inverse OT; default handling of display-referred media and graphics in ACES mode; round-trip tests. | C2.6 | yes: titles look right |
+| **C2.10** | Color Space Transform effect (CPU + GPU, agent docs, parity). | C2.5 (OT presets after C2.7) | yes |
+| **C2.11** | UI: Sequence Settings, Interpret Footage, Lumetri badge, monitor indicator, scopes option, export panel; automation ids; screenshots via the control channel; scopes/keyers audit. | C2.4–C2.9 | yes |
+| **C2.12** (optional) | ACES 1.3 RRT/ODT for matching legacy ACES pipelines; AP0 EXR export; EXR chromaticities detection. | Q2 | optional |
+
+C2.2 and C2.3 do not depend on ACES and can start right after approval (they also remove the
+C1.9 CPU decode cost).
+
+## 11. Open questions for approval
+
+- **Q1 — Clean room and oracle.** May we (a) install `ctlrender` (AMPAS CTL) or OpenColorIO tools
+  locally **as external test oracles only** to produce reference tables, and (b) if the 2.0
+  documentation is insufficient, read the AMPAS reference CTL under an ADR? (Nothing would be
+  installed without your go-ahead.)
+- **Q2 — Output transform.** Approve ACES 2.0 as the ACES output transform with the FilmCraft
+  view (option C) first, and ACES 1.x only as optional C2.12?
+- **Q3 — IDT matrices.** Derived matrices (chromaticities + Bradford) as the default, vendor-
+  published matrices only as test references — or adopt vendor matrices where they differ?
+- **Q4 — Lumetri in ACEScct.** Keep the current control maths on the ACEScct signal (with AP1
+  luma) and defer retuning to C3?
+- **Q5 — Order.** Start with C2.2 + C2.3 (GPU log / GPU display transform, immediate speed win),
+  then C2.1/C2.4/C2.5 — or ACES-first (C2.1 → C2.5)?
+- **Q6 — Defaults in ACES mode.** RGC on, display-referred media via inverse OT (once C2.9
+  lands), output SDR Rec.709 100 nit — OK?

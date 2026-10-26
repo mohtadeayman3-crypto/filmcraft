@@ -35,4 +35,9 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
 - [x] §0–2 written (scope, today's pipeline, log on GPU) — commit "C2.0: design draft, part 1"
 - [x] §3–5 written (ACES architecture, output transform options, sources) — part 2
 - [x] §6–8 written (tests, schema, UI/commands) — part 3
-- [ ] §9–10 written (risks, staged plan, open questions) — final "C2.0: design draft"
+- [x] §9–11 written (risks, staged plan, open questions) — final "C2.0: design draft"
+
+## Next
+
+Phase 1 complete. **Waiting for user approval** of `docs/C2-DESIGN.md` and answers to Q1–Q6
+(§11). No code has been written; nothing pushed; nothing installed.
