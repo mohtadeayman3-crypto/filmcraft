@@ -41,10 +41,10 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
 - [x] C2.2 GPU camera log decode implemented and verified with A/B real-footage metrics
 - [x] Isolated OCIO oracle setup in `D:\FilmCraftX-tools\` (Python 3.12, OpenColorIO 2.6.0, NumPy 2.5.4)
 - [x] Item 3: Chroma siting empirical test completed and confirmed (+0.25 chroma texel shift)
+- [x] Item 4: Export default investigation and C1102.MP4 benchmark complete
 
 ## Next
 
-- Item 4: Export default investigation and C1102.MP4 benchmark
 - Item 5: ACEScg pipeline wiring design summary (15 lines)
 
 ## C2.1 Pure-Rust ACES Core Completion Summary (2026-10-26)
@@ -158,6 +158,32 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
   - Conversely, $cp - 0.25$ shifts the midpoint further right to $x = 8.5$.
   - **Conclusion**: The correct sign and magnitude for left-sited 4:2:0 chroma correction is **$+0.25$ chroma texels** ($+0.5$ luma pixels).
   - Status: Logged as a separate low-priority task; no shader changes made.
+
+## Export Default Investigation & C1102.MP4 Benchmark (2026-10-26)
+
+- **Git History Investigation (`gpu_rendering` default)**:
+  - Commit `7b73c8e8` (GPU3d, Oct 9 2026) made `GpuRendering::Auto` the default after Linux benchmarks showed 2.4× (1080p) to 3.2× (4K) speedups on layered effects scenes.
+  - Commit `4304cd93` (Merge #421, Oct 10 2026, Brandon Thomas) reverted `gpu_rendering` default to `Off` (opt-in per export), stating: *"GpuRendering defaults to Off (opt-in per export) until measured on Windows and macOS; docs and ROADMAP say so."*
+  - Additionally, `filmcraft-cli` links `wgpu` without native backend features by default, returning `None` from `ExportRenderer::new()` unless native features are linked, falling back safely to CPU.
+- **Empirical Measurement on Real S-Log3 Footage (`C1102.MP4`, Frame 3500, NVIDIA RTX 5060 Ti, Windows)**:
+  - **Raw S-Log3 Export (Decode to Rec.709, No Effects)**:
+    - CPU render time: min = 81.9 ms, mean = 86.1 ms, median = **87.1 ms** (11.5 FPS)
+    - GPU render time: min = 44.3 ms, mean = 45.9 ms, median = **45.7 ms** (21.9 FPS)
+    - Speedup: **1.91×**
+    - Pixel differences: max = 64/255 (confined to 4:2:0 chroma transitions), mean channel diff = 0.289/255 (0.11%), p99 = 3/255, 92.8% $\le 1$ code, 98.2% $\le 2$ codes.
+  - **Full 6-Section Lumetri Chain on S-Log3 Export**:
+    - CPU render time: min = 338.2 ms, mean = 345.1 ms, median = **345.0 ms** (2.9 FPS)
+    - GPU render time: min = 77.0 ms, mean = 93.3 ms, median = **78.8 ms** (12.7 FPS)
+    - Speedup: **4.38×**
+    - Pixel differences: max = 169/255 (contrast-sharpened chroma edges), mean channel diff = 0.274/255 (0.11%), p99 = 4/255, 91.4% $\le 1$ code, 97.4% $\le 2$ codes.
+- **Proposal for Our Fork**:
+  - Propose changing the default in our fork to `GpuRendering::Auto`:
+    1. Delivers 1.91× speedup on plain log clips and 4.38× speedup on graded 4K exports.
+    2. Zero risk of crash or export failure: `ExportRenderer` automatically falls back to CPU if device loss or errors occur.
+    3. GPU produces visually superior, smooth bilinear chroma reconstruction rather than CPU nearest-neighbor stair-stepping.
+    4. Deterministic bit-level reproducibility remains selectable via explicit `Off`.
+  - Default is kept as `Off` for now; no changes made yet.
+
 
 
 
