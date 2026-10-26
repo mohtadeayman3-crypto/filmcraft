@@ -460,3 +460,170 @@ AP1 → BT.709/BT.2020 matrices (derived, §5.1 + §5.4), ITU-R BT.2390 EETF (ex
 `bt2390_eetf`), `desaturate_into_gamut` (existing). No new constants.
 
 ---
+
+## 6. Test plan
+
+All tests are synthetic (no media committed). GPU tests run with `--test-threads=1` on Vulkan (C1
+note).
+
+### 6.1 Legacy must not move
+
+- Every existing test in `filmcraft-color`, `filmcraft-render` (`colorman`, `lumetri_hdr_tests`)
+  and `filmcraft-gpu` (`fx_tests`) passes **unmodified**.
+- New pin test: `gamut_matrix(a, b)` for all existing D65 pairs equals the pre-C2 result bit for
+  bit (computed by the old D65-only formula inside the test).
+- `ColorPipeline::REC709` and every pre-C2 project deserialises to the legacy mode; a render of a
+  synthetic legacy sequence (SDR, PQ, HLG, wide gamut, S-Log3 clip) is byte-identical before/after
+  each C2 commit (8-bit output hash).
+
+### 6.2 Reference values (`filmcraft-color`, CPU, f64)
+
+| Test | Reference | Tolerance |
+|---|---|---|
+| `npm(AP0, W_ACES)`, `npm(AP1, W_ACES)` | published NPMs (§5.1) | 1e-9 per element (published to 10 decimals) |
+| AP0 ↔ AP1 | published matrices (§5.1) | 1e-9 |
+| AP1 luma | Y row | 1e-10 |
+| Bradford CAT D65→ACES white | maps D65 XYZ to ACES-white XYZ exactly | 1e-12; and white (1,1,1) in any D65 gamut → (1,1,1) in AP1 within 1e-9 |
+| ACEScct | continuity at X_BRK/Y_BRK; 0.18 → `(log2 0.18 + 9.72)/17.52`; 0 → B | 1e-12 |
+| ACEScc | three-piece continuity; min value | 1e-12 |
+| Camera IDTs | 18 % grey code value of every log curve → ACEScg (0.18, 0.18, 0.18) | 1e-6 |
+| Camera IDTs vs published vendor/Academy IDT matrices | values copied from the vendor documents at C2.5 (**to verify**), each with a citation in the test | 1e-4 (rounding); larger differences are documented, not hidden |
+| RGC | in-gamut colours unchanged; `limit` distance → boundary; monotone | exact / 1e-6 |
+| ACES 2.0 OT | oracle table (Q1) of ~200 ACES2065-1 triples → display code values per preset (SDR 709, PQ 1000, HLG 1000), including greys, primaries, out-of-gamut camera colours, 0 and very large values | 1e-4 display-linear (SDR), 1e-4 PQ code value |
+| ACES 2.0 OT properties | grey axis stays neutral; monotone along greys; peak input saturates at the display peak; output finite for NaN/±∞/negative inputs | exact / finite |
+
+### 6.3 Round trips
+
+- `AcesCct::decode(encode(x)) = x` for x in [−0.01, 65504] (log-spaced), rel 1e-12; same for ACEScc
+  (above its floor).
+- Source → ACEScg → same source space (`InputTransform` then the inverse via Color Space
+  Transform) for every `ColorSpace` × {Limited, Full}: signal error ≤ 2e-4 (as
+  `channel_roundtrips_every_curve`), skipping Apple Log below its floor.
+- OT ∘ inverse OT on display code values 0…1 for SDR 709 and 0…PQ(1000) for PQ: ≤ 1e-4 inside the
+  display gamut (documents where 2.0 is not exactly invertible).
+- Rec.709 title through inverse-OT input → ACEScg → OT (§3.5 option 1): 8-bit output identical to
+  the input for ≥ 99.9 % of a synthetic test chart, max 1 code value.
+
+### 6.4 GPU / CPU parity (`crates/gpu/src/fx_tests.rs` style)
+
+Metric as C1: `d = |cpu − gpu| / (1 + |cpu|)`, `flips` for hue ties.
+
+| Case | Tolerance |
+|---|---|
+| Log decode via table texture (all 10 curves × 2 ranges × 8/10-bit) + matrix + gamut compression (legacy) | `EXACT = 1e-4`, flips 0 |
+| Same into ACEScg (IDT + RGC) | `1e-4` |
+| Lumetri full chain in `GradeSpace::Acescct` | `1e-4` (log2/exp2 ULPs; slope ≤ 17.52·ln2 ≈ 12, far below PQ's ≈ 495) |
+| GPU display transform for non-plain legacy pipelines (C2.3) | `1e-4` SDR, `3e-4` PQ (C1 precedent) |
+| ACES 2.0 OT analytic WGSL vs CPU f32 | target `1e-4`; interim 3D-LUT path documented at `1e-3` |
+| End-to-end 8-bit composite (S-Log3 clip, ACES SDR) | `max ≤ 1`, `mean < 0.2` (C1.9 precedent) |
+
+### 6.5 Hostile inputs (never-crash §0.8)
+
+- Every new transform under `catch_unwind` with NaN, ±∞, −1e30, 1e30, subnormals: no panic, finite
+  output.
+- Project files: unknown colour-management mode, unknown output preset, peak nits 0 / negative /
+  NaN / 1e9, missing fields → clear error or documented default, never a panic. Fuzz the colour
+  settings JSON with mutations (truncation, type flips).
+- Commands: `sequence.colorManagement` with bad ids/values → error message listing valid values.
+
+### 6.6 Performance (benchmark, C2.2 and C2.8)
+
+Extend `crates/gpu/examples/lumetri_bench.rs`: 4K S-Log3 Y'CbCr clip, (a) legacy C1.9 path,
+(b) GPU log decode (expect upload 66 MB → 12–25 MB and the CPU decode gone), (c) ACES mode with
+OT. Real-footage A/B on the ZV-E10 S-Log3 clip as in C1.8 (local media, not committed).
+
+---
+
+## 7. Project-file schema and migration
+
+### 7.1 Model changes (`filmcraft-color`, serialised through `filmcraft-project`)
+
+```rust
+/// Sequence Settings ▸ Color ▸ Colour management.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ColorManagement { #[default] Legacy, Aces }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcesSettings {
+    pub grading: AcesGrading,            // Acescct (default) | Acescc
+    pub output: AcesOutput,              // Sdr709 (default) | Pq { peak_nits: u32 } | Hlg { peak_nits: u32 }
+    pub view: AcesView,                  // Aces2 (default once C2.8 lands) | FilmCraft (option C)
+    pub gamut_compression: bool,         // ACES RGC, default true
+    pub display_referred: DisplayReferred, // InverseOutput (default) | Linear
+}
+
+pub struct ColorPipeline {
+    pub working: WorkingSpace,
+    pub wide_gamut: bool,
+    pub auto_tone_map: bool,
+    #[serde(default, skip_serializing_if = "is_legacy")]
+    pub management: ColorManagement,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aces: Option<AcesSettings>,
+}
+```
+
+- Peaks are integer cd/m² (`u32`) so `ColorPipeline` stays `Eq + Hash` (it is a cache key);
+  validated to 100…10 000 on load and in commands.
+- In ACES mode `working`/`wide_gamut`/`auto_tone_map` are ignored by the renderer but kept, so
+  switching back to legacy restores the previous settings. `SequenceSettings::working_space`
+  (display label) becomes "ACEScg".
+- `ColorSpace` gains `Aces2065_1`, `AcesCg`, `AcesCct`, `AcesCc` (Interpret Footage). Their ids
+  are new strings; existing ids never change.
+- Color Space Transform effect instances are ordinary `EffectInstance`s (new effect id, §8.3).
+
+### 7.2 Schema bump and migration
+
+- An older build would fail to parse a new `ColorSpace` variant or silently drop `management` /
+  `aces` on save, so this is a **schema bump with a no-op migration step** (docs/project-files.md
+  rule): `v{N} → v{N+1}` where N is the current `filmcraft_format::SCHEMA_VERSION` (the model
+  mentions v15 for project notes; confirm in `crates/format` at C2.4).
+- Old files: missing fields → `management = Legacy`, `aces = None` → identical rendering.
+- Older builds opening a C2 file get the existing "saved by a newer version" refusal.
+- Tests: hand-made fixture of the previous version in `crates/format/tests/fixtures/` loads with
+  `Legacy`; a C2 project round-trips; `docs/project-files.md` schema history gets a row
+  ("C2.4 | ACES colour management, ACES colour spaces; no-op step").
+
+---
+
+## 8. UI, commands and agent surface
+
+### 8.1 Commands (`crates/engine/src/color.rs`; everything is a command)
+
+| Id | Params | Notes |
+|---|---|---|
+| `sequence.colorManagement` | `{sequence?, mode: legacy\|aces, output?: sdr709\|pq\|hlg, peakNits?, grading?: acescct\|acescc, view?: aces2\|filmcraft, gamutCompression?, displayReferred?: inverseOutput\|linear}` | one undo step; returns the effective pipeline |
+| `sequence.colorInfo` | `{sequence?}` | working, grading, output, view, per-clip input spaces (for agents) |
+| `media.interpret` (existing) | `colorSpace` accepts the new ACES ids | |
+| `effect.add` (existing) | `colorSpaceTransform` | §8.3 |
+| `export.*` (existing) | `outputTransform?` override (e.g. SDR 709 deliverable from a PQ sequence) | C2.7 |
+
+### 8.2 UI (`crates/ui-egui`)
+
+- **Sequence Settings ▸ Color**: "Colour management" dropdown (Rec.709 / HDR | ACES). In ACES
+  mode: Output (SDR Rec.709 100 nits / PQ / HLG + peak), Grading space (ACEScct / ACEScc),
+  View (ACES 2.0 / FilmCraft), "Gamut compression", "Display-referred media" (Inverse output
+  transform / Linear). Legacy controls are hidden, not lost.
+- **Interpret Footage ▸ Color Management**: ACES spaces added to the list.
+- **Lumetri panel**: grading-space badge ("ACEScct") in the header; HDR White / HDR Range controls
+  hidden in ACES mode (the OT defines the display peak).
+- **Program monitor**: small view indicator ("ACES 2.0 · Rec.709 100") and a tooltip.
+- **Scopes**: default to the output-transformed signal; option "ACEScct (grading signal)".
+- **Export**: shows the sequence output transform; HDR exports keep writing PQ/HLG metadata.
+- Automation ids: `seqSettings.color.management.<legacy|aces>`, `seqSettings.color.aces.output.<id>`,
+  `…aces.peak`, `…aces.grading.<id>`, `…aces.view.<id>`, `…aces.gamutCompression`,
+  `…aces.displayReferred.<id>`, `lumetri.gradingSpace`, `monitor.colorView`; UI state stays serde.
+- Wording: "ACES" is used descriptively; no ACES logo and no claim of Academy logo-program
+  certification.
+
+### 8.3 Color Space Transform effect
+
+Effect id `colorSpaceTransform` (Effects ▸ Color Correction): params `inputSpace`, `outputSpace`
+(any `ColorSpace` id incl. ACES), `toneMap` (none / BT.2390 / ACES OT preset), `gamutMap`
+(none / desaturate / RGC), `forward` (bool, inverse when off). CPU via `InputTransform`/
+`OutputTransform` building blocks, GPU as an `FxOp` (decode-table texture + matrix + optional
+stages) with parity tests; documented in `build_effects()` agent docs.
+
+---
