@@ -556,4 +556,90 @@ mod tests {
         // plain pipeline is an identity
         assert!(OutputTransform::display(&ColorPipeline::REC709).is_identity());
     }
+
+    #[test]
+    fn legacy_golden_outputs_remain_unchanged() {
+        // Pure-Rust deterministic 64-bit FNV-1a checksum over byte arrays
+        fn fnv1a_64(data: &[u8]) -> u64 {
+            let mut h: u64 = 0xcbf29ce484222325;
+            for &b in data {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+            h
+        }
+
+        // 1. S-Log3 -> Rec.709 256-step ramp: input 0..255 normalized
+        let slog3_tf = InputTransform::new(ColorSpace::SLog3SGamut3Cine, Range::Limited, &ColorPipeline::REC709, None);
+        let mut slog3_bytes = Vec::with_capacity(256 * 3);
+        for i in 0..=255 {
+            let norm = i as f32 / 255.0;
+            let lin = slog3_tf.convert([norm, norm, norm]);
+            slog3_bytes.push(crate::linear_to_srgb_u8(lin[0]));
+            slog3_bytes.push(crate::linear_to_srgb_u8(lin[1]));
+            slog3_bytes.push(crate::linear_to_srgb_u8(lin[2]));
+        }
+        let slog3_hash = fnv1a_64(&slog3_bytes);
+
+        // 2. Rec.2100 PQ -> Rec.709 256-step ramp (0..4000 nits)
+        let pq_tf = InputTransform::new(ColorSpace::Rec2100Pq, Range::Limited, &ColorPipeline::REC709, Some(4000.0));
+        let mut pq_bytes = Vec::with_capacity(256 * 3);
+        for i in 0..=255 {
+            let norm = i as f32 / 255.0;
+            let lin = pq_tf.convert([norm, norm, norm]);
+            pq_bytes.push(crate::linear_to_srgb_u8(lin[0]));
+            pq_bytes.push(crate::linear_to_srgb_u8(lin[1]));
+            pq_bytes.push(crate::linear_to_srgb_u8(lin[2]));
+        }
+        let pq_hash = fnv1a_64(&pq_bytes);
+
+        // 3. 75% Rec.709 standard color bars: White, Yellow, Cyan, Green, Magenta, Red, Blue
+        let bars_709 = [
+            [0.75, 0.75, 0.75],
+            [0.75, 0.75, 0.0],
+            [0.0, 0.75, 0.75],
+            [0.0, 0.75, 0.0],
+            [0.75, 0.0, 0.75],
+            [0.75, 0.0, 0.0],
+            [0.0, 0.0, 0.75],
+        ];
+        let plain_tf = InputTransform::new(ColorSpace::Rec709, Range::Limited, &ColorPipeline::REC709, None);
+        let mut bars_bytes = Vec::with_capacity(7 * 3);
+        for bar in bars_709 {
+            let lin = plain_tf.convert(bar);
+            bars_bytes.push(crate::linear_to_srgb_u8(lin[0]));
+            bars_bytes.push(crate::linear_to_srgb_u8(lin[1]));
+            bars_bytes.push(crate::linear_to_srgb_u8(lin[2]));
+        }
+        let bars_hash = fnv1a_64(&bars_bytes);
+
+        // 4. OutputTransform: HDR PQ working space -> SDR Rec.709 display
+        let hdr_pipe = ColorPipeline { working: WorkingSpace::Rec2100Pq, wide_gamut: false, auto_tone_map: true };
+        let out_tf = OutputTransform::display(&hdr_pipe);
+        let mut out_bytes = Vec::with_capacity(256 * 3);
+        for i in 0..=255 {
+            let v = (i as f32 / 255.0) * (4000.0 / 203.0); // up to 4000 nits
+            let res = out_tf.apply([v, v, v]);
+            out_bytes.push(crate::linear_to_srgb_u8(res[0]));
+            out_bytes.push(crate::linear_to_srgb_u8(res[1]));
+            out_bytes.push(crate::linear_to_srgb_u8(res[2]));
+        }
+        let out_hash = fnv1a_64(&out_bytes);
+
+        // Assert exact baseline golden hashes (immutable reference points for legacy mode)
+        assert_eq!(slog3_hash, 0xc47e9b0ceaee0fe0, "S-Log3 ramp hash mismatch: got {slog3_hash:#018x}");
+        assert_eq!(pq_hash, 0xbfe99b21cb64f28d, "Rec.2100 PQ ramp hash mismatch: got {pq_hash:#018x}");
+        assert_eq!(bars_hash, 0x5271bd11d6a1d073, "Rec.709 bars hash mismatch: got {bars_hash:#018x}");
+        assert_eq!(out_hash, 0x01b28810c4f9782e, "HDR PQ display output ramp hash mismatch: got {out_hash:#018x}");
+
+        // Also assert exact floating-point baseline vectors at key reference points
+        let slog3_grey = slog3_tf.convert([0.410557, 0.410557, 0.410557]);
+        assert!((slog3_grey[0] - 0.18).abs() < 0.002, "S-Log3 mid-grey: {slog3_grey:?}");
+
+        let pq_ref_white = pq_tf.convert([0.58, 0.58, 0.58]); // ~203 nits in PQ
+        assert!((pq_ref_white[0] - 1.0).abs() < 0.05, "PQ 203 nits reference white: {pq_ref_white:?}");
+
+        let bar_white = plain_tf.convert([0.75, 0.75, 0.75]);
+        assert!((bar_white[0] - 0.75).abs() < 1e-6, "Rec.709 75% white: {bar_white:?}");
+    }
 }
