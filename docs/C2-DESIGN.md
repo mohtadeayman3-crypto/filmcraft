@@ -179,3 +179,284 @@ on the GPU as well (or keeps the CPU encode at first). Once that exists, `gpu_in
 `is_plain()` condition is replaced by "the pipeline has a GPU display transform".
 
 ---
+
+## 3. Where ACES fits
+
+### 3.1 Target pipeline (ACES mode)
+
+```text
+camera log / HDR / SDR source signal
+  → decode curve (existing DecodeTable; GPU per §2.2)
+  → [HLG OOTF | inverse output transform for display-referred media, §3.5]
+  → 3×3: source gamut (D65) → CAT D65→ACES white → AP1  ............ "input transform" (IDT), §3.4
+  → optional Reference Gamut Compression (in AP1), §3.6
+  ═ ACEScg working space (AP1, scene-linear, 0.18 = mid grey) ═══════  compositing, blending, effects
+      Lumetri / grading ops: encode ACEScg → ACEScct, grade, decode ACEScct → ACEScg, §3.3
+  → output transform (ACES 2.0 recommended, §4): ACEScg → AP0 → OT(peak, limiting primaries, EOTF)
+  → display encode: sRGB/BT.1886 (monitor, Rec.709 export) | PQ | HLG
+```
+
+AP0 (ACES2065-1) is the **interchange** space only: EXR import/export ("ACES2065-1" Interpret
+Footage choice and an export option) and the input to the 2.0 output transform. FilmCraft never
+composites in AP0 (negative-free but very wide; grading operators behave badly there).
+
+### 3.2 Working space: ACEScg
+
+- Primaries AP1, white point ACES white (≈ D60), linear (AMPAS S-2014-004).
+- Units: scene-linear, **0.18 = 18 % grey**, no reference-white normalisation. Camera log media
+  decoded today to "0.18 = 0.18" therefore needs only a matrix — no scaling.
+- Storage: compositor textures are `Rgba32Float` (FX stage) and `Rgba16Float` (accumulator).
+  ACEScg values above 1 and slightly negative values (out-of-AP1 camera colours before RGC) fit in
+  `f16` (max 65 504). Precision of `f16` around 0.18 is ~1e-4, same as today.
+- Luma weights for operators that need luminance (Lumetri, keyers, desaturate): the Y row of the
+  AP1 → XYZ NPM (§5.1). Lumetri currently hard-codes `luma709`; in ACES mode it gets the AP1
+  weights through its `GradeSpace` (legacy stays `luma709` — parity rule 3).
+
+### 3.3 Grading space: ACEScct
+
+- ACEScct (AMPAS S-2016-001): log2-based encoding of ACEScg with a linear toe; formula and
+  constants in §5.2. ACEScc (S-2014-003) is offered as a secondary choice (pure log, no toe) —
+  optional, low cost, both are in §5.2.
+- Implementation: a new `GradeSpace` mode `3 = Acescct` (CPU `grade.rs` and WGSL `gs_encode` /
+  `gs_decode`). Encoding range is about −0.36…1.47 for 0…65 504, so Lumetri must treat it like its
+  HDR modes (no clamping to 0…1, `within_unit` scaling above 1) — values above 1 are legitimate.
+- Lumetri controls tuned for an sRGB-encoded signal behave differently on an ACEScct signal (mid
+  grey sits at 0.4136 instead of 0.4613 on the sRGB curve; contrast pivot, shadows/highlights
+  weights). The design keeps the existing control maths and documents the different feel;
+  retuning is a C3 (node grading: log wheels, contrast + pivot) concern. Open question Q4.
+
+### 3.4 Input transforms (IDTs) for the existing camera curves
+
+An IDT here is **curve decode (exists) + one 3×3 matrix** (camera gamut → AP1). The matrices are
+*derived*, not copied:
+
+`M_idt = NPM_AP1⁻¹ · CAT(D65 → W_ACES) · NPM_camera` (camera NPM from the vendor chromaticities
+already in `Gamut::primaries()`, SMPTE RP 177; CAT = Bradford, §5.4).
+
+Code change: `Gamut` gets a `white()` (D65 for all existing gamuts, ACES white for `Ap0`/`Ap1`),
+`npm()` uses it, and `gamut_matrix` inserts the CAT only when the whites differ. All existing
+gamut pairs are D65↔D65, so legacy matrices are **bit-identical** (a test pins them).
+
+| Source (`ColorSpace`) | Curve (exists) | Gamut (exists) | IDT matrix |
+|---|---|---|---|
+| S-Log3 / S-Gamut3.Cine, S-Log3 / S-Gamut3 | `SLog3` | `SGamut3Cine`, `SGamut3` | derived |
+| V-Log / V-Gamut | `VLog` | `VGamut` | derived |
+| C-Log2, C-Log3 / Cinema Gamut | `CLog2`, `CLog3` | `CinemaGamut` | derived |
+| LogC3 / AWG3, LogC4 / AWG4 | `LogC3`, `LogC4` | `Awg3`, `Awg4` | derived |
+| Apple Log | `AppleLog` | `Bt2020` | derived |
+| D-Log / D-Gamut | `DLog` | `DGamut` | derived |
+| F-Log, F-Log2 / F-Gamut; F-Log2 C / F-Gamut C | `FLog`, `FLog2` | `Bt2020`, `FGamutC` | derived |
+
+Vendors and the Academy also publish IDT matrices for some of these cameras. Those published
+matrices are used **only as test references** (§6.2); where a vendor matrix differs from our
+derivation by more than rounding (e.g. because the vendor used another CAT or a spectrally
+optimised matrix), the difference is documented in the crate README and the user decides whether
+to adopt the vendor matrix (open question Q3). I do not quote vendor IDT numbers in this document
+because I cannot verify them from memory — **(to verify)** at C2.5 from the vendors' documents.
+
+Exposure: camera log decodes to scene-linear reflectance already normalised so 18 % grey = 0.18
+(the vendor curves are defined that way), which is exactly ACES' scene-linear convention, so no
+exposure scale is added. (ARRI LogC3 is EI-dependent; FilmCraft implements EI 800 only — unchanged.)
+
+### 3.5 Display-referred media in an ACES project
+
+Rec.709/sRGB clips, titles, graphics, generators, colour mattes and PQ/HLG deliverables are
+display-referred. Two choices, selectable per sequence (default first):
+
+1. **Inverse output transform** (recommended default): decode → display linear → inverse of the
+   sequence's output transform → ACEScg. A Rec.709 title then comes out of the forward output
+   transform unchanged (within the OT's invertible range), which is what users expect for
+   graphics. Requires an invertible OT — a strong argument for ACES 2.0 (§4).
+2. **Linear + matrix** ("scene-linear interpretation"): decode, BT.709 → AP1 matrix; SDR white
+   1.0 lands at ACEScg 1.0, so it looks dimmer/compressed after the OT. Cheap, and the only option
+   until the inverse OT exists (C2.5 uses it as a stand-in).
+
+PQ / HLG sources use the inverse of the matching HDR output transform (PQ 1000 / HLG 1000) or the
+linear option (PQ in BT.2408 working units → scene-linear by `0.18 / (BT.2408 grey ≈ 26 cd/m² /
+203)` — **(to verify)** the scaling choice at C2.9; not used by default).
+
+### 3.6 Reference Gamut Compression
+
+Today's `gamut_compress` is described as "after the ACES Reference Gamut Compression" but uses one
+threshold/limit for all channels and runs in the *working* gamut (BT.709). In ACES mode the
+**ACES 1.3 Reference Gamut Compression** runs in AP1 with its published per-channel parameters
+(§5.5, values **to verify**), as an optional sequence setting (default on, as in common ACES
+practice for camera media). Legacy mode keeps the current function untouched.
+
+### 3.7 New colour spaces (Interpret Footage / Color Space Transform)
+
+`Gamut::Ap0`, `Gamut::Ap1`; `ColorSpace::Aces2065_1` (AP0 linear, id `aces2065-1`),
+`ColorSpace::AcesCg` (`acescg`), `ColorSpace::AcesCct` (`acescct`), `ColorSpace::AcesCc`
+(`acescc`); `Curve::AcesCct`, `Curve::AcesCc`. `from_info` never returns them (no stream metadata
+signals ACES); they come from the override or from EXR headers (`chromaticities` attribute —
+matching EXR AP0/AP1 chromaticities is a C2 follow-up, not in scope).
+
+---
+
+## 4. Output transform: ACES 1.x RRT + ODT versus ACES 2.0
+
+### 4.1 The options
+
+| | **A. ACES 1.x (1.3) RRT + ODT** | **B. ACES 2.0 Output Transform** | **C. FilmCraft display transform from ACEScg** (non-ACES) |
+|---|---|---|---|
+| What it is | Fixed Reference Rendering Transform (glow, red modifier, global desaturation, segmented-spline tone scale) followed by a per-display ODT (second spline, dim-surround compensation, display gamut clip). HDR ODTs use the 1.1+ "single stage tone scale" (SSTS). | One parametric transform per display: tone scale parameterised by peak luminance, chroma compression and display gamut compression in a CAM-based (JMh, Hellwig 2022) space, white/limiting-primaries handling. | AP1 → BT.709/BT.2020 matrix + the existing BT.2390 EETF (max(RGB) ratio) + `desaturate_into_gamut`. |
+| Specification | Defined by AMPAS reference CTL (aces-dev 1.3); no stand-alone prose formula document for the RRT. | AMPAS ACES 2.0 technical documentation (docs.acescentral.com) + reference CTL (aces-output, 2024–2025). | Ours (BT.2390 is public ITU-R text). |
+| Look | The "classic ACES look"; known hue skews (blue → purple, saturated reds/yellows clip abruptly), SDR and HDR renderings do not match well. | Designed to fix those: hue-preserving, smoother gamut approach, SDR/HDR consistent from one parameter set. | Neutral, hue-preserving, not ACES-compliant; looks like today's FilmCraft. |
+| Invertibility | Poor (ODT clipping, RRT not cleanly invertible) → weak for graphics (§3.5). | Designed to be invertible within the display gamut (SDR up to its peak) → inverse OT for graphics works. | Invertible below the source peak. |
+| Industry state | Still widely used; frozen. | Current release; shipping in OCIO 2.4+ configs and major graders (to verify exact versions); interchange with other ACES 2.0 tools. | — |
+| Complexity / GPU cost | Moderate: two splines, a few matrices, per-pixel ALU; easy on GPU. | High: per-pixel CAM forward/inverse, cusp/gamut-boundary tables (hue-indexed, precomputed per display), iterative gamut-boundary search in the reference (can be tabled). Feasible on GPU with precomputed tables. | Trivial (exists). |
+| Constants to transcribe | Many spline coefficients from CTL. | Many CAM and tone-scale parameters; tables computed at init from the documented algorithm. | None new. |
+
+### 4.2 Recommendation
+
+**Implement ACES 2.0 as the ACES output transform (option B), and ship option C first as a
+fallback/preview view.** Do not implement ACES 1.x unless a user needs to match a 1.x pipeline
+(possible later task, open question Q2).
+
+Reasons:
+
+1. **Invertibility** is required for the default handling of graphics and Rec.709 media (§3.5);
+   1.x makes titles look wrong in an ACES timeline.
+2. **One parametric transform** covers SDR 100 cd/m², PQ 1000 (and later 2000/4000) and HLG from
+   the same code, matching FilmCraft's existing peak-driven design (`HDR_PEAK_NITS`,
+   `src_peak_nits`), instead of one ODT per display.
+3. **Hue behaviour** is better and consistent between SDR and HDR deliveries.
+4. It is the current Academy release; building on the frozen 1.x would be legacy on day one.
+5. Option C costs nothing (it is today's tone/gamut mapping fed from ACEScg) and lets C2.4–C2.5
+   land the whole ACES working/grading pipeline before the large OT work, with the UI labelling it
+   honestly ("FilmCraft view", not "ACES").
+
+Implementation strategy for B (C2.6–C2.8):
+
+- **CPU reference first**, `f64`, in `filmcraft-color::aces2`, written from the AMPAS 2.0
+  technical documentation. Per-display initialisation (peak, limiting primaries, encoding
+  primaries, white) precomputes the tone-scale parameters and the hue-indexed cusp / gamut-boundary
+  tables once, cached like `display_transform`.
+- **GPU**: an analytic WGSL port of the per-pixel part reading the precomputed tables from a small
+  texture, compared against the CPU reference (`f32`). Interim fallback if parity is hard: bake the
+  CPU reference into a 65³ 3D LUT over an ACEScct-shaped domain and evaluate it with the existing
+  tetrahedral GPU LUT code (C1.7) — documented tolerance ~1e-3, used only until the analytic path
+  passes `1e-4`.
+- **Oracle**: the AMPAS reference CTL (via `ctlrender`) or OpenColorIO's ACES 2.0 built-in
+  transforms as an **external test oracle only**, generating reference values once into a small
+  committed test table (numbers, not media), exactly as ffmpeg is used today. Installing either
+  tool needs your approval (open question Q1); nothing is linked or shipped.
+
+> [!IMPORTANT]
+> **Clean-room question (Q1).** AGENTS.md §2 forbids reading the *source* of reference
+> implementations of a *format*; for ACES the Academy's published CTL is itself the normative
+> definition of the RRT/ODT (1.x) and accompanies the 2.0 technical documentation. This design
+> assumes we implement from the AMPAS **documentation** (prose + equations) and use CTL/OCIO only
+> as black-box oracles. If the 2.0 documentation turns out to be insufficient for a constant or a
+> step, we need your decision whether reading the AMPAS CTL (Academy licence, permissive with
+> attribution — **to verify**) is allowed, recorded in an ADR.
+
+---
+
+## 5. Formulas, constants and their sources
+
+Status column: **pub** = value as published, reproduced from the cited document and to be
+re-checked digit by digit when coded (tests pin it); **derived** = computed in code from published
+inputs; **to verify** = I am not certain of the exact value; it must be taken from the cited
+document at implementation time and is not to be used from this file.
+
+### 5.1 Primaries, white points, matrices
+
+| Item | Value | Source | Status |
+|---|---|---|---|
+| ACES white point (x, y) | 0.32168, 0.33767 | SMPTE ST 2065-1 (ACES); AMPAS S-2014-004 | pub |
+| AP0 primaries R, G, B (x, y) | (0.7347, 0.2653), (0.0000, 1.0000), (0.0001, −0.0770) | SMPTE ST 2065-1 | pub |
+| AP1 primaries R, G, B (x, y) | (0.713, 0.293), (0.165, 0.830), (0.128, 0.044) | AMPAS S-2014-004 (ACEScg) | pub |
+| AP0 → XYZ | [0.9525523959, 0, 0.0000936786; 0.3439664498, 0.7281660966, −0.0721325464; 0, 0, 1.0088251844] | ST 2065-1 / S-2014-004 (published NPM) | pub — test: `npm(AP0, W_ACES)` matches to 1e-9 |
+| AP1 → XYZ | [0.6624541811, 0.1340042065, 0.1561876870; 0.2722287168, 0.6740817658, 0.0536895174; −0.0055746495, 0.0040607335, 1.0103391003] | S-2014-004 | pub — test as above |
+| AP0 → AP1 | [1.4514393161, −0.2365107469, −0.2149285693; −0.0765537734, 1.1762296998, −0.0996759264; 0.0083161484, −0.0060324498, 0.9977163014] | S-2014-004 | pub — test: `NPM_AP1⁻¹·NPM_AP0` |
+| AP1 → AP0 | [0.6954522414, 0.1406786965, 0.1638690622; 0.0447945634, 0.8596711185, 0.0955343182; −0.0055258826, 0.0040252103, 1.0015006723] | S-2014-004 | pub — test as above |
+| AP1 luma weights | 0.2722287168, 0.6740817658, 0.0536895174 (Y row of AP1 → XYZ) | derived from S-2014-004 | derived |
+| NPM from chromaticities | `M = [X_r X_g X_b; …]·diag(S)`, `S = [X_r…]⁻¹·W_XYZ` | SMPTE RP 177 (existing `npm()`) | exists |
+| Camera gamut chromaticities | as in `crates/color/README.md` table | vendor documents listed there | exists |
+
+The code **derives** every matrix from chromaticities (as `npm()` does today) and the tests compare
+against the published matrices above; the published numbers are never the source of truth in code.
+
+### 5.2 ACEScct and ACEScc
+
+ACEScct (AMPAS **S-2016-001**), `lin` = ACEScg value:
+
+```text
+encode:  lin ≤ X_BRK : cct = A·lin + B
+         lin > X_BRK : cct = (log2(lin) + 9.72) / 17.52
+decode:  cct ≤ Y_BRK : lin = (cct − B) / A
+         cct < (log2(65504) + 9.72)/17.52 : lin = 2^(cct·17.52 − 9.72)
+         else : lin = 65504
+X_BRK = 0.0078125   Y_BRK = 0.155251141552511
+A = 10.5402377416545   B = 0.0729055341958355
+```
+
+ACEScc (AMPAS **S-2014-003**):
+
+```text
+encode:  lin ≤ 0      : (log2(2^−16) + 9.72) / 17.52
+         lin < 2^−15  : (log2(2^−16 + lin·0.5) + 9.72) / 17.52
+         else         : (log2(lin) + 9.72) / 17.52
+decode:  cc < (9.72 − 15)/17.52           : (2^(cc·17.52 − 9.72) − 2^−16)·2
+         cc < (log2(65504) + 9.72)/17.52   : 2^(cc·17.52 − 9.72)
+         else : 65504
+```
+
+| Constant | Status |
+|---|---|
+| 9.72, 17.52 (shared log2 offset/scale) | pub (S-2014-003, S-2016-001) |
+| X_BRK, Y_BRK, A, B | pub (S-2016-001); test: continuity of both pieces at X_BRK within 1e-12 |
+| 65504 (half-float max clamp) | pub |
+| Reference points: 0.18 → 0.4135884 (both curves), 1.0 → 0.5547945, ACEScc minimum −0.3584475 | derived from the formulas above (to be computed by the test, not copied) |
+
+### 5.3 Camera curves and gamuts
+
+Unchanged: formulas and constants as documented in `crates/color/README.md` (§ Camera log curves,
+gamut table), with their vendor sources. C2 adds no camera constants.
+
+### 5.4 Chromatic adaptation (D65 ↔ ACES white)
+
+Bradford (von Kries in a sharpened cone space): `CAT = M_B⁻¹ · diag(ρ_d/ρ_s, γ_d/γ_s, β_d/β_s) · M_B`,
+with `(ρ, γ, β) = M_B · XYZ_white`.
+
+| Item | Value | Source | Status |
+|---|---|---|---|
+| `M_B` | [0.8951, 0.2664, −0.1614; −0.7502, 1.7135, 0.0367; 0.0389, −0.0685, 1.0296] | K. M. Lam, *Metamerism and Colour Constancy*, PhD thesis, University of Bradford (1985); reproduced in ICC.1 (ICC profile specification) Annex E | pub |
+| D65 (x, y) | 0.3127, 0.3290 | ITU-R BT.709-6 (existing `D65`) | exists |
+| Choice of Bradford for D65 ↔ ACES white | — | ACES 1.x display ODTs use a Bradford D60→D65 adaptation; whether ACES 2.0 uses Bradford, CAT02 or none (2.0 handles white differently) | **to verify** against the ACES 2.0 documentation at C2.6 |
+
+### 5.5 ACES 1.3 Reference Gamut Compression (optional stage in AP1)
+
+Per-channel distance `d = (ach − c)/|ach|`, `ach = max(R,G,B)`; distances above the threshold are
+compressed with a parametrised power curve so that `limit` maps to 1.0 (same form as today's
+`gamut_compress`, with per-channel parameters for the cyan (R), magenta (G) and yellow (B)
+distances).
+
+| Parameter | Value | Source | Status |
+|---|---|---|---|
+| Thresholds C / M / Y | 0.815 / 0.803 / 0.880 | AMPAS, *ACES Reference Gamut Compression* (ACES 1.3, 2021) documentation | **to verify** |
+| Limits C / M / Y | 1.147 / 1.264 / 1.312 | same | **to verify** |
+| Power | 1.2 | same | **to verify** |
+| Working space of the operator | ACEScg (AP1) | same | pub (stated design of the RGC) |
+
+### 5.6 ACES 2.0 Output Transform
+
+Source: AMPAS ACES 2.0 Output Transform technical documentation (docs.acescentral.com, 2024–2025)
+and the accompanying reference implementation used **only as an oracle** (Q1).
+
+| Component | Parameters to transcribe at C2.6 | Status |
+|---|---|---|
+| Tone scale (peak-luminance parameterised, includes mid-grey anchoring and flare/toe) | all constants and the formula for deriving them from peak luminance | **to verify** — not reproduced here |
+| CAM: Hellwig 2022 JMh (forward/inverse), adapting luminance, background, surround, compression exponents | all model constants and the AP0→CAM matrices | **to verify** |
+| Chroma compression (in-gamut), gamut compression to the limiting primaries, cusp / boundary tables (hue resolution) | all constants, table size, smoothing | **to verify** |
+| Display encodings: Rec.709/BT.1886 100 cd/m² (SDR), Rec.2100 PQ 1000 cd/m² (limiting P3-D65 or Rec.2020), Rec.2100 HLG 1000 cd/m² | preset list and their parameters | **to verify** |
+| PQ EOTF / inverse | SMPTE ST 2084 (existing `pq_eotf`) | exists |
+| HLG OETF / OOTF | ARIB STD-B67, ITU-R BT.2100 (existing) | exists |
+
+### 5.7 Fallback view (option C)
+
+AP1 → BT.709/BT.2020 matrices (derived, §5.1 + §5.4), ITU-R BT.2390 EETF (existing
+`bt2390_eetf`), `desaturate_into_gamut` (existing). No new constants.
+
+---
