@@ -36,6 +36,10 @@ pub enum Gamut {
     DGamut,
     /// Fujifilm F-Gamut C (F-Log2 C). F-Gamut itself has the BT.2020 primaries.
     FGamutC,
+    /// ACES AP0 (SMPTE ST 2065-1).
+    Ap0,
+    /// ACES AP1 / ACEScg (AMPAS S-2014-004).
+    Ap1,
 }
 
 impl Gamut {
@@ -54,6 +58,16 @@ impl Gamut {
             Gamut::Awg4 => [[0.7347, 0.2653], [0.1424, 0.8576], [0.0991, -0.0308]],
             Gamut::DGamut => [[0.71, 0.31], [0.21, 0.88], [0.09, -0.08]],
             Gamut::FGamutC => [[0.7347, 0.2653], [0.0263, 0.9737], [0.1173, -0.0224]],
+            Gamut::Ap0 => crate::aces::AP0_PRIMARIES,
+            Gamut::Ap1 => crate::aces::AP1_PRIMARIES,
+        }
+    }
+
+    /// (x, y) chromaticity of the reference white point (ACES white for AP0/AP1, D65 for all others).
+    pub fn white(self) -> [f64; 2] {
+        match self {
+            Gamut::Ap0 | Gamut::Ap1 => crate::aces::ACES_WHITE,
+            _ => D65,
         }
     }
 
@@ -68,7 +82,7 @@ impl Gamut {
 
     /// RGB → CIE XYZ (normalised so white Y = 1).
     pub fn to_xyz(self) -> Mat3 {
-        npm(self.primaries(), D65)
+        npm(self.primaries(), self.white())
     }
 
     /// Luminance weights (the Y row of [`Gamut::to_xyz`]).
@@ -114,11 +128,20 @@ pub fn inverse(m: &Mat3) -> Mat3 {
 pub const IDENTITY: Mat3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
 /// Linear RGB in `src` → linear RGB in `dst`.
+///
+/// When the source and destination share the same white point (e.g. D65 ↔ D65), this is the direct
+/// `NPM_dst⁻¹ · NPM_src` product. When white points differ (e.g. D65 ↔ ACES white ≈ D60), a Bradford
+/// chromatic adaptation transform is inserted: `NPM_dst⁻¹ · CAT(src_white → dst_white) · NPM_src`.
 pub fn gamut_matrix(src: Gamut, dst: Gamut) -> Mat3 {
     if src == dst {
         return IDENTITY;
     }
-    mul(&inverse(&dst.to_xyz()), &src.to_xyz())
+    if src.white() == dst.white() {
+        mul(&inverse(&dst.to_xyz()), &src.to_xyz())
+    } else {
+        let cat = crate::aces::bradford_cat(src.white(), dst.white());
+        mul(&inverse(&dst.to_xyz()), &mul(&cat, &src.to_xyz()))
+    }
 }
 
 pub fn to_f32(m: &Mat3) -> [[f32; 3]; 3] {
@@ -422,6 +445,48 @@ mod tests {
             for i in 0..3 {
                 for j in 0..3 {
                     assert!((back[i][j] - IDENTITY[i][j]).abs() < 1e-9);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn aces_gamut_matrices_and_adaptation() {
+        // AP0 ↔ AP1 gamut_matrix matches direct npm derivation
+        let ap0_to_ap1 = gamut_matrix(Gamut::Ap0, Gamut::Ap1);
+        let direct_ap0_to_ap1 = crate::aces::ap0_to_ap1();
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!((ap0_to_ap1[i][j] - direct_ap0_to_ap1[i][j]).abs() < 1e-12);
+            }
+        }
+
+        let ap1_to_ap0 = gamut_matrix(Gamut::Ap1, Gamut::Ap0);
+        let direct_ap1_to_ap0 = crate::aces::ap1_to_ap0();
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!((ap1_to_ap0[i][j] - direct_ap1_to_ap0[i][j]).abs() < 1e-12);
+            }
+        }
+
+        // Cross-white point adaptation (D65 -> ACES white): white maps to white
+        for g in [Gamut::Bt709, Gamut::Bt2020, Gamut::SGamut3Cine, Gamut::Awg4] {
+            let m = gamut_matrix(g, Gamut::Ap1);
+            let w = mul_vec(&m, [1.0, 1.0, 1.0]);
+            assert!(
+                w.iter().all(|v| (v - 1.0).abs() < 1e-9),
+                "{g:?} -> Ap1 white mapping failed: {w:?}"
+            );
+
+            // Invertibility
+            let inv_m = gamut_matrix(Gamut::Ap1, g);
+            let roundtrip = mul(&m, &inv_m);
+            for i in 0..3 {
+                for j in 0..3 {
+                    assert!(
+                        (roundtrip[i][j] - IDENTITY[i][j]).abs() < 1e-9,
+                        "Roundtrip failed for {g:?} at ({i}, {j})"
+                    );
                 }
             }
         }

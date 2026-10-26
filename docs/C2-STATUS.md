@@ -40,7 +40,36 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
 
 ## Next
 
-Task C2.2 complete. Ready for next task in C2 plan (e.g. C2.1 ACES color spaces & reference vectors, or C2.3).
+Awaiting user response regarding Python environment setup for OCIO test oracle vectors in `D:\FilmCraftX-tools\`.
+Ready for C2.3 (GPU display transform / resolve stage).
+
+## C2.1 Pure-Rust ACES Core Completion Summary (2026-10-26)
+
+- **Implementation in `filmcraft-color`**:
+  - `crates/color/src/aces.rs`:
+    - Defined published chromaticities for AP0 (SMPTE ST 2065-1:2012) and AP1 (AMPAS S-2014-004), and ACES white point `[0.32168, 0.33767]`.
+    - Implemented Bradford Chromatic Adaptation Transform (`bradford_cat`) based on K. M. Lam (1985) / ICC.1 Annex E.
+    - Derived Normalized Primary Matrices via SMPTE RP 177: `ap0_to_xyz()`, `ap1_to_xyz()`, `ap0_to_ap1()`, `ap1_to_ap0()`, and AP1 luminance weights (`ap1_luma()`).
+    - Implemented ACEScg (scene-linear identity), ACEScct (AMPAS S-2016-001 forward and inverse), and ACEScc (AMPAS S-2014-003 forward and inverse).
+  - `crates/color/src/spaces.rs`:
+    - Added `Gamut::Ap0` and `Gamut::Ap1`.
+    - Added `white(self)` returning ACES white for AP0/AP1 and D65 for all existing gamuts.
+    - Updated `gamut_matrix(src, dst)` to insert Bradford CAT when white points differ (`D65 ↔ ACES white`), preserving 100% bit-for-bit identity across existing D65 pairs.
+- **Matrix Cross-Check Against Published AMPAS Matrices**:
+  - `AP0 -> XYZ`: max difference from published SMPTE ST 2065-1 matrix is **$4.84 \times 10^{-11}$**.
+  - `AP1 -> XYZ`: max difference from published S-2014-004 matrix is **$4.36 \times 10^{-11}$**.
+  - `AP0 -> AP1`: max difference from published S-2014-004 matrix is **$4.81 \times 10^{-11}$**.
+  - `AP1 -> AP0`: max difference from published S-2014-004 matrix is **$4.79 \times 10^{-11}$**.
+  - Confirmed: derivation from primary chromaticities agrees with official published 10-decimal matrices within rounding limits of IEEE 754 f64.
+- **Curve Verification**:
+  - ACEScct: verified $C^1$ continuity at $X_{BRK} = 0.0078125$ ($Y_{BRK} \approx 0.15525114$) within $10^{-12}$ and exact first-derivative match $A = 10.5402377...$.
+  - ACEScc & ACEScct: verified 18% mid-grey maps to $0.4135884...$ and 1.0 maps to $0.5547945...$.
+  - Round-trip accuracy: relative error $< 10^{-10}$ across geometric grid from $10^{-6}$ to $65504$.
+- **Automated Tests**:
+  - 38 tests passing in `filmcraft-color`.
+  - 207 tests passing in `filmcraft-render`.
+  - Zero compiler or clippy warnings across entire workspace.
+
 
 ## C2.2 Completion Summary (2026-10-26)
 
