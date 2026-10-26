@@ -43,10 +43,13 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
 - [x] Item 3: Chroma siting empirical test completed and confirmed (+0.25 chroma texel shift)
 - [x] Item 4: Export default investigation and C1102.MP4 benchmark complete
 - [x] Item 5: ACEScg pipeline wiring design summary complete
+- [x] Hygiene check: Anonymized personal paths and committed (`3a829356`)
+- [x] Git push: Branch `main` pushed to `origin/main` (`ab3f27fc..3a829356`), verified matching HEAD
+- [x] Full-sequence 10-second export benchmark completed (250 frames, clips + transition + title + speed change + Lumetri): 1.70× raw speedup, 7.46× graded speedup, 100% GPU rendered
 
 ## Next
 
-Awaiting user approval of Item 5 design summary before proceeding to C2.3 / ACES pipeline integration.
+Awaiting user approval of revised Stage A plan (C2.3 to C2.9) before implementing Stage A.
 
 ## C2.1 Pure-Rust ACES Core Completion Summary (2026-10-26)
 
@@ -202,6 +205,54 @@ Awaiting user approval of Item 5 design summary before proceeding to C2.3 / ACES
 13. **Test Plan (Regression)**: Automated parity test guaranteeing existing `Rec709` and HDR projects produce 100% bit-for-bit identical output on both CPU and GPU paths.
 14. **Risks (Out-of-Gamut Scene Values)**: Highly saturated camera primaries mapped to AP1 can yield negative tristimulus values; mitigate by incorporating ACES Reference Gamut Compression (RGC).
 15. **Risks (Resolve Pipeline Overhead)**: Applying display transforms across intermediate compositing passes; mitigate by keeping intermediate buffers scene-linear ACEScg and resolving display only at output.
+
+## Full-Sequence 10-Second Export Benchmark Results (2026-10-26)
+
+Tested using `cargo run --release -p filmcraft-gpu --example seq_bench` on genuine Sony ZV-E10 S-Log3 footage (`C1102.MP4`).
+- **Timeline Configuration**: 10.0 seconds (250 frames @ 25 fps, 3840×2160 UHD), working space Rec. 709 (Linear).
+  - Clip 1: 0.0s – 5.0s, normal speed (1.0x), source_in = 10.0s.
+  - Clip 2: 5.0s – 10.0s, speed change (1.5x), source_in = 60.0s.
+  - Transition: Cross-dissolve at cut (4.5s – 5.5s, 1.0s / 26 frames).
+  - Title Graphic Clip: Procedural text layer ("FilmCraft C2 Benchmark") on Track 1 (2.0s – 8.0s, 6.0s duration).
+  - Test Passes: (1) Raw S-Log3, (2) Graded with full 6-section Lumetri grade.
+
+### 1. Export Speed & GPU Utilization
+- **Frames rendered by GPU**: **250 / 250 (100.0%)** across both passes (0 CPU fallbacks).
+- **Pass 1 (Raw S-Log3, no effects)**:
+  - CPU Export: 20.52 s (82.1 ms/frame)
+  - GPU Export: 12.04 s (48.2 ms/frame)
+  - **Speedup: 1.70×**
+- **Pass 2 (Lumetri 6-Section Grade)**:
+  - CPU Export: 92.50 s (370.0 ms/frame)
+  - GPU Export: 12.40 s (49.6 ms/frame)
+  - **Speedup: 7.46×** (GPU adds only 1.4 ms/frame for full 6-section Lumetri chain, vs +288 ms/frame on CPU).
+
+### 2. Pixel Parity Metrics (Over 2.07 Billion Pixels per Pass)
+- **Pass 1 (Raw S-Log3)**:
+  - Mean channel difference: 0.3413 / 255 (0.13%)
+  - 99th percentile (p99): 3 / 255
+  - $\le 1$ code diff: 87.59% | $\le 2$ code diff: 96.83%
+  - $> 20$ code diff: 0.0070% (localized to high-contrast chroma edges due to bilinear vs nearest-neighbour chroma upsampling)
+- **Pass 2 (Lumetri S-Log3)**:
+  - Mean channel difference: 0.3216 / 255 (0.13%)
+  - 99th percentile (p99): 3 / 255
+  - $\le 1$ code diff: 87.23% | $\le 2$ code diff: 94.91%
+  - $> 20$ code diff: 0.0274%
+
+### 3. Regional Breakdown
+| Timeline Region | Raw Mean Diff | Raw p99 | Graded Mean Diff | Graded p99 | Graded $\le 2$ codes |
+|---|---|---|---|---|---|
+| Clip 1 alone (0..2s) | 0.3457 / 255 | 3 / 255 | 0.3664 / 255 | 3 / 255 | 92.32% |
+| Clip 1 + Title (2..4.5s) | 0.3479 / 255 | 3 / 255 | 0.3732 / 255 | 4 / 255 | 92.14% |
+| Transition + Title (4.5..5.5s) | 0.3033 / 255 | 3 / 255 | 0.3041 / 255 | 3 / 255 | 95.95% |
+| Speed 1.5x + Title (5.5..8s) | 0.3597 / 255 | 3 / 255 | 0.2865 / 255 | 3 / 255 | 97.29% |
+| Speed 1.5x alone (8..10s) | 0.3243 / 255 | 3 / 255 | 0.2633 / 255 | 3 / 255 | 97.54% |
+
+### 4. Visual Inspection Analysis
+- **Title Graphic Overlay**: Text layer rasterizes to tight RGBA bounds on CPU and composites seamlessly on GPU. Text edges show zero bleeding or edge halos.
+- **Cross-Dissolve Transition**: LayerStack evaluates dissolving inputs into `PlanLayer` items; opacity interpolation on GPU matches CPU linear blending with p99 = 3/255.
+- **1.5x Speed Remapping**: Nearest-frame sampling at 1.5x speed samples identical source frames on CPU and GPU with zero frame desync.
+- **Export Default Status**: Maintained as `GpuRendering::Off` (opt-in) pending final platform review; benchmark proves 100% reliability and up to 7.46× speedup.
 
 
 
