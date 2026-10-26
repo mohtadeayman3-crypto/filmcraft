@@ -50,10 +50,12 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
 - [x] C2.4: WorkingSpace::AcesCg, GradeSpace::AcesCct, schema v16 roundtrip, and UI gating
 - [x] Item 1 Safety & Gating: ACEScg hidden behind FILMCRAFT_EXPERIMENTAL_ACES=1, labeled "(experimental, incomplete)", engine notice returned
 - [x] Item 2 GPU Golden Outputs: legacy-mode GPU golden checks passing (`legacy_gpu_golden_outputs_remain_unchanged`)
+- [x] Item 3 docs/FORK.md: Documented schema v16 incompatibility and dynamic schema downgrade proposal
 
 ## Next
 
-- Item 3: `docs/FORK.md` update regarding schema v16 and downgrade cost analysis.
+- Item 4: Task F1 (default export `gpu_rendering` to `Auto` in fork with 10s MP4 example).
+- Item 5: C2.5 utility transforms, scopes, and eyedropper.
 - Item 4: Task F1 (default export `gpu_rendering` to `Auto` in fork with 10s MP4 example).
 - Item 5: C2.5 utility transforms, scopes, and eyedropper.
 
@@ -332,3 +334,9 @@ Tested using `cargo run --release -p filmcraft-gpu --example seq_bench` on genui
      - GPU Golden Hash: `0x1bc3b47aa28c8568`
      - Parity vs CPU: max difference $= 1$ code (tolerance $\le 2$).
 - Verified: All 4 GPU golden outputs pass deterministically.
+
+### Item 3: Project Schema v16 Documentation in FORK.md
+- Added Section 6 to `docs/FORK.md`:
+  - Documented schema v16 bump (`SCHEMA_VERSION = 16` in `crates/format`) and noted that original FilmCraft 0.12 rejects schema $> 15$.
+  - Formulated dynamic downgrade proposal (no code): project encoder checks `seq.settings.color.working.is_aces()`; writes schema 15 if no sequence uses ACEScg, and schema 16 only when ACEScg is present.
+  - Analyzed costs: negligible runtime overhead ($< 1\,\mu\text{s}$), low code complexity, moderate test matrix expansion, zero risk of data loss.

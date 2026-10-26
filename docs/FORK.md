@@ -128,3 +128,40 @@ cargo test --workspace --exclude filmcraft-automation --lib --bins --tests --no-
 # 5. Commit the merge
 git commit -m "Merge upstream changes into main"
 ```
+
+---
+
+## 6. Project Schema v16 & Upstream Compatibility
+
+### 6.1 Schema Version Incompatibility with FilmCraft 0.12
+- In Task C2.3, the project file format schema was bumped to **version 16** (`SCHEMA_VERSION = 16` in `crates/format/src/lib.rs`) to persist `WorkingSpace::AcesCg` in `SequenceSettings.color`.
+- Upstream FilmCraft 0.12 enforces `SCHEMA_VERSION = 15`. Its deserializer strictly rejects any project file where `schema_version > 15` with `FormatError::FutureVersion`:
+  > *"file format version 16 is newer than this version of FilmCraft (supported up to 15)"*
+- **Important note for users and contributors:** Any project saved or resaved by FilmCraft-X is written as schema version 16 and **cannot be opened by original FilmCraft 0.12**, even if all sequences in the project use standard Rec. 709.
+
+### 6.2 Proposed Backward-Compatible Serialization (Design Only)
+To preserve project interchange between FilmCraft-X and upstream FilmCraft 0.12 for non-ACES projects, the project encoder can dynamically determine the minimum required schema version at serialization time:
+
+1. **Inspection at Save Time:**
+   - When serializing a `Project` in `crates/format/src/encode.rs` (or `write_project`):
+   - Scan all sequences in `project.sequences`:
+     ```text
+     has_v16_features = sequences.iter().any(|seq| seq.settings.color.working.is_aces())
+     target_schema = if has_v16_features { 16 } else { 15 }
+     ```
+2. **Serialization:**
+   - If `has_v16_features == false`, write header `schema_version: 15`.
+   - If `has_v16_features == true`, write header `schema_version: 16`.
+3. **Upstream Interoperability:**
+   - Any project created or edited in FilmCraft-X that does not use ACEScg will write schema 15 and open seamlessly in stock FilmCraft 0.12.
+   - Upstream FilmCraft will only encounter version 16 if the user actively switched a sequence to ACEScg.
+
+### 6.3 Cost & Trade-off Analysis
+- **Runtime Performance Cost:** Negligible. Scanning sequence settings takes $< 1\,\mu\text{s}$ over memory structures already resident in RAM.
+- **Code Maintenance Cost:** Low. Requires a small pure-Rust query function in `crates/format` (`fn project_required_schema(project: &Project) -> u32`).
+- **Testing Overhead:** Moderate. Requires unit tests for:
+  - Project with Rec.709 sequences encodes as schema 15 and roundtrips against stock v15 fixtures.
+  - Project with ACEScg sequence encodes as schema 16 and roundtrips.
+  - Project created as ACEScg, subsequently reverted to Rec.709, gracefully downgrades to schema 15 on next save.
+- **Risk Assessment:** Low risk. No data loss is possible because `WorkingSpace::Rec709` is fully representable in schema 15.
+
