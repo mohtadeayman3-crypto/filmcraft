@@ -14,9 +14,9 @@ struct U {
     p0: vec4<f32>,   // opacity, kind (0 rgba8 srgb straight, 1 rgba16f premul linear, 2 yuv), taps, transfer (0 srgb, 1 linear, 2 pq, 3 hlg)
     p1: vec4<f32>,   // y_off y_scale c_off c_scale (code units)
     p2: vec4<f32>,   // kr kb code_scale footprint
-    p3: vec4<f32>,   // blend mode, alpha-plane scale (0: none), effect-source integer decimation, unused
-    // Colour management of HDR / wide-gamut Y'CbCr (`filmcraft_color::InputTransform`, #965):
-    q0: vec4<f32>,   // on, curve (0 sdr, 1 linear, 2 pq, 3 hlg), HLG OOTF scale (0: none), reference white cd/m²
+    p3: vec4<f32>,   // blend mode, alpha-plane scale (0: none), effect-source integer decimation, gamut_compress on (1.0) / off (0.0)
+    // Colour management of HDR / wide-gamut / log Y'CbCr (`filmcraft_color::InputTransform`, #965):
+    q0: vec4<f32>,   // on, curve (0 sdr, 1 linear, 2 pq, 3 hlg, 4 log), HLG OOTF scale (0: none), reference white cd/m²
     q1: vec4<f32>,   // HLG OOTF luma weights, gamut matrix on
     q2: vec4<f32>,   // gamut matrix row 0, tone mapping on
     q3: vec4<f32>,   // gamut matrix row 1, tone-mapping source peak cd/m²
@@ -32,6 +32,8 @@ struct U {
 @group(0) @binding(4) var backdrop: texture_2d<f32>;
 // The alpha plane of a Y'CbCr source (ProRes 4444, ...); a dummy texture when `u.p3.y` is 0.
 @group(0) @binding(5) var tex3: texture_2d<f32>;
+// 1D LUT table for camera log curves (8192×1 R32Float); a dummy texture when `curve != 4u`.
+@group(0) @binding(6) var lut_table: texture_2d<f32>;
 
 struct VOut {
     @builtin(position) pos: vec4<f32>,
@@ -122,16 +124,62 @@ fn eetf(nits: f32, s: f32, d: f32) -> f32 {
     return pq1(e2 * smax) * 10000.0;
 }
 
+// Sample the 8192-entry DecodeTable texture (-0.1 .. 1.1) with manual linear interpolation.
+fn sample_decode_table(t: texture_2d<f32>, v: f32) -> f32 {
+    let p = clamp((v - (-0.1)) / 1.2, 0.0, 1.0) * 8191.0;
+    let i = min(i32(p), 8190);
+    let f = p - f32(i);
+    let a = textureLoad(t, vec2<i32>(i, 0), 0).r;
+    let b = textureLoad(t, vec2<i32>(i + 1, 0), 0).r;
+    return a + (b - a) * f;
+}
+
+fn compress_component(v: f32, ach: f32) -> f32 {
+    let th = 0.8;
+    let p = 1.2;
+    let s = 0.29803417; // (LIM - TH) / pow(pow((LIM - TH) / (1.0 - TH), P) - 1.0, 1.0 / P)
+    let d = (ach - v) / ach;
+    if d < th {
+        return v;
+    }
+    let x = (d - th) / s;
+    let dc = th + s * x / pow(1.0 + pow(x, p), 1.0 / p);
+    return ach - dc * ach;
+}
+
+// Compress out-of-gamut camera colours towards the achromatic axis (`filmcraft_color::transform::gamut_compress`).
+fn gamut_compress(c: vec3<f32>) -> vec3<f32> {
+    let ach = max(max(c.r, c.g), c.b);
+    if ach <= 1e-9 {
+        return max(c, vec3(0.0));
+    }
+    return vec3(
+        compress_component(c.r, ach),
+        compress_component(c.g, ach),
+        compress_component(c.b, ach)
+    );
+}
+
 // Signal → working linear: `InputTransform::convert` (curve, HLG OOTF, gamut matrix, tone
-// mapping, desaturation into the working gamut). The CPU's decode tables clamp the signal to 0..1.
+// mapping, gamut compression, desaturation into the working gamut).
 fn managed(rgb: vec3<f32>) -> vec3<f32> {
-    let v = clamp(rgb, vec3(0.0), vec3(1.0));
     let curve = u32(u.q0.y);
     let white = u.q0.w;
-    var c = v;
-    if curve == 0u { c = srgb_to_linear(v); }
-    if curve == 2u { c = vec3(pq1(v.r), pq1(v.g), pq1(v.b)) * (10000.0 / white); }
-    if curve == 3u { c = hlg_inv(v); }
+    var c = rgb;
+    if curve == 0u {
+        c = srgb_to_linear(clamp(rgb, vec3(0.0), vec3(1.0)));
+    } else if curve == 2u {
+        let v = clamp(rgb, vec3(0.0), vec3(1.0));
+        c = vec3(pq1(v.r), pq1(v.g), pq1(v.b)) * (10000.0 / white);
+    } else if curve == 3u {
+        c = hlg_inv(clamp(rgb, vec3(0.0), vec3(1.0)));
+    } else if curve == 4u {
+        c = vec3(
+            sample_decode_table(lut_table, rgb.r),
+            sample_decode_table(lut_table, rgb.g),
+            sample_decode_table(lut_table, rgb.b)
+        );
+    }
     if u.q0.z > 0.0 {
         let ys = max(dot(u.q1.xyz, c), 0.0);
         var g = 0.0;
@@ -153,6 +201,9 @@ fn managed(rgb: vec3<f32>) -> vec3<f32> {
             }
             c = c * k;
         }
+    }
+    if u.p3.w > 0.5 {
+        c = gamut_compress(c);
     }
     if u.q5.w > 0.5 {
         let mn = min(min(c.r, c.g), c.b);

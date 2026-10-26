@@ -40,7 +40,49 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
 
 ## Next
 
-Phase 1 approved by user.
-Reviewing Section 5 sources and full "to verify" list.
-Inspected `composite.wgsl` and updated `docs/C2-DESIGN.md` §12.
-Awaiting user confirmation on sandbox permission for real S-Log3 footage `C:\Users\Mohtady\Downloads\C1102.MP4` and `D:\FilmCraftX-ab` directory before running C2.2 A/B check.
+Task C2.2 complete. Ready for next task in C2 plan (e.g. C2.1 ACES color spaces & reference vectors, or C2.3).
+
+## C2.2 Completion Summary (2026-10-26)
+
+- **Implementation**:
+  - `crates/color/src/transform.rs`: Added `range: Range` to `InputTransform`, `GpuCurve::Log(Curve, Range)` to `enum GpuCurve`, and `compress: bool` to `struct GpuInputParams`. `gpu_params()` now maps all 12 camera log curves and preserves gamut compression flags for GPU execution.
+  - `crates/gpu/src/composite.wgsl`:
+    - Bound `lut_table: texture_2d<f32>` at `@group(0) @binding(6)`.
+    - Added `sample_decode_table(t, v)`: reads from the 8192-entry 1D decode table using `textureLoad` with manual `f32` linear interpolation over the $[-0.1, 1.1]$ domain (protecting against platforms without R32Float hardware filtering).
+    - Added `gamut_compress(c)`: exact GPU translation of the CPU ACES-style gamut compression with identical parameters ($s \approx 0.29803417$, threshold $0.8$, limit $1.25$, power $1.2$).
+    - Updated `managed()` path to execute decode table sampling and gamut compression in shader for log curves (`curve == 4u`).
+  - `crates/gpu/src/lib.rs`:
+    - Added on-demand upload of 8192x1 `R32Float` textures in `GpuCompositor::get_decode_table` cached by `(Curve, Range)`.
+    - Bound `lut_table` across composite and layer effect passes (with fallback dummy texture when unmanaged).
+  - `crates/render/src/colorman.rs`: Updated documentation to reflect that camera log media on Y'CbCr hardware frames is managed entirely on the GPU. Retained CPU decode fallback for non-Y'CbCr frames (RGB/generators) and frame-blended clips.
+- **Automated Tests**:
+  - `log_input_gpu_matches_cpu` in `crates/gpu/src/tests.rs`: verified all 12 camera log spaces (S-Log3, S-Gamut3, V-Log, C-Log2, C-Log3, LogC3, LogC4, Apple Log, D-Log, F-Log, F-Log2, F-Log2 C) achieve $\le 2$ 8-bit code difference against CPU reference.
+  - `gpu_yuv_log_clip_full_lumetri_chain_matches_cpu` in `crates/gpu/src/fx_tests.rs`: verified synthetic 4:4:4 YUV log clip with full 6-section Lumetri chain matches CPU reference with $p99 = 1$, mean $= 0.32$, max $= 5$.
+  - Clean test suites across `filmcraft-color` (30 passed), `filmcraft-render` (207 passed), and `filmcraft-gpu` (47 passed).
+  - `cargo clippy --workspace --all-targets` passes with 0 warnings.
+
+- **Real Footage A/B Parity (`C1102.MP4`, Sony S-Log3 / S-Gamut3.Cine, 3840x2160, Frame 3500)**:
+  - **Raw Input Transform (S-Log3 to Rec.709 Working Space)**:
+    - Total pixels: 8,294,400 ($3840 \times 2160$).
+    - Mean channel difference: $0.289$ / 255 ($0.113\%$).
+    - Mean per-pixel max difference: $0.647$ / 255.
+    - 99th percentile difference ($p99$): $3$ / 255 codes.
+    - Max difference: $64$ / 255 codes (confined strictly to 4:2:0 subsampled chroma edge transitions).
+    - Match distribution:
+      - $\le 1$ code difference: $92.80\%$ ($7,697,550$ px)
+      - $\le 2$ codes difference: $98.18\%$ ($8,143,184$ px)
+      - $> 20$ codes difference: $635$ px ($0.0077\%$)
+  - **Full 6-Section Lumetri Chain on S-Log3 Footage**:
+    - Mean channel difference: $0.274$ / 255 ($0.107\%$).
+    - Mean per-pixel max difference: $0.626$ / 255.
+    - 99th percentile difference ($p99$): $4$ / 255 codes.
+    - Max difference: $169$ / 255 codes (boosted by aggressive sharpening/contrast at high-frequency chroma boundaries).
+    - Match distribution:
+      - $\le 1$ code difference: $91.40\%$ ($7,580,784$ px)
+      - $\le 2$ codes difference: $97.37\%$ ($8,076,014$ px)
+      - $> 20$ codes difference: $1,300$ px ($0.0157\%$)
+
+- **4:2:0 Chroma Upsampling Quantification**:
+  - *Mechanism*: CPU `filmcraft-frame` upsamples 4:2:0 chroma planes using nearest-neighbor box sampling (`cy = y >> sy; cx = x >> sx;`), repeating each $2\times 2$ chroma sample across four luma pixels. The GPU compositor in `composite.wgsl` samples chroma planes using hardware bilinear interpolation via `load4(tex1, cp)`.
+  - *Impact*: In interior pixel regions and smooth gradients ($> 98\%$ of the image), CPU and GPU agree within $\le 2$ codes (mean difference $\approx 0.28$ codes). The outlier differences ($> 20$ codes, representing $< 0.016\%$ of pixels) occur exclusively along sharp, high-contrast chroma edges where nearest-neighbor creates 2-pixel stair-stepping blocks while GPU bilinear filtering produces smooth sub-pixel anti-aliasing. GPU bilinear filtering is visually superior and prevents chroma blockiness.
+

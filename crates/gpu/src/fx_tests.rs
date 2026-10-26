@@ -1220,6 +1220,104 @@ fn gpu_log_clip_full_lumetri_chain_matches_cpu() {
     assert!(max <= 1 && mean < 0.2, "log clip composited 8-bit: p99 {p99}, mean {mean:.4}, max {max}");
 }
 
+/// C2.2: Y'CbCr camera log clip with input transform on the GPU (`GpuCurve::Log`) matches the CPU
+/// reference across the full 6-section Lumetri chain.
+#[test]
+fn gpu_yuv_log_clip_full_lumetri_chain_matches_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (320u32, 180u32);
+    // Create a 4:4:4 Yuv16 synthetic frame with a luma/chroma sweep spanning shadows, midtones and highlights
+    let y: Vec<u16> = (0..h).flat_map(|row| (0..w).map(move |col| (64 + (row * w + col) % 876) as u16)).collect();
+    let cb: Vec<u16> = (0..h).flat_map(|_row| (0..w).map(move |col| (256 + (col * 512 / w)) as u16)).collect();
+    let cr: Vec<u16> = (0..h).flat_map(|row| (0..w).map(move |_col| (256 + (row * 512 / h)) as u16)).collect();
+    let data = PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(cb), Arc::new(cr)], chroma: Chroma::C444, bits: 10, alpha: None };
+    let color = filmcraft_color::ColorInfo {
+        matrix: filmcraft_color::Matrix::Bt709,
+        transfer: filmcraft_color::Transfer::Bt709,
+        primaries: filmcraft_color::Primaries::Bt709,
+        range: Range::Limited,
+    };
+    let frame = Arc::new(VideoFrame { width: w, height: h, data, color, par: (1, 1), pts: Default::default() });
+
+    let cs = filmcraft_color::ColorSpace::SLog3SGamut3Cine;
+    let input_tf = Arc::new(filmcraft_color::InputTransform::new(cs, Range::Limited, &filmcraft_color::ColorPipeline::REC709, None));
+    assert!(input_tf.gpu_params().is_some());
+
+    let lumetri = effect(
+        "lumetri",
+        &[
+            ("temperature", fl(14.0)),
+            ("tint", fl(-8.0)),
+            ("exposure", fl(0.45)),
+            ("contrast", fl(22.0)),
+            ("highlights", fl(-18.0)),
+            ("shadows", fl(16.0)),
+            ("whites", fl(8.0)),
+            ("blacks", fl(-6.0)),
+            ("saturation", fl(108.0)),
+            ("look", ch(1)),
+            ("look_intensity", fl(75.0)),
+            ("faded_film", fl(8.0)),
+            ("sharpen", fl(20.0)),
+            ("vibrance", fl(15.0)),
+            ("creative_sat", fl(105.0)),
+            ("curve_luma", ParamValue::Curve(vec![[0.0, 0.02], [0.25, 0.20], [0.75, 0.82], [1.0, 0.98]])),
+            ("curve_red", ParamValue::Curve(vec![[0.0, 0.0], [0.5, 0.52], [1.0, 1.0]])),
+            ("curve_blue", ParamValue::Curve(vec![[0.0, 0.02], [0.5, 0.48], [1.0, 0.98]])),
+            ("hue_vs_sat", ParamValue::Curve(vec![[0.0, 0.52], [0.08, 0.58], [0.33, 0.45], [0.66, 0.54], [1.0, 0.52]])),
+            ("wheel_shadows", pt(-0.08, 0.06)),
+            ("wheel_shadows_l", fl(-5.0)),
+            ("wheel_midtones", pt(0.06, 0.03)),
+            ("wheel_midtones_l", fl(4.0)),
+            ("wheel_highlights", pt(0.08, -0.04)),
+            ("wheel_highlights_l", fl(6.0)),
+            ("hsl_on", ParamValue::Bool(true)),
+            ("hsl_hue", fl(22.0)),
+            ("hsl_hue_range", fl(28.0)),
+            ("hsl_sat_min", fl(12.0)),
+            ("hsl_luma_min", fl(15.0)),
+            ("hsl_luma_max", fl(85.0)),
+            ("hsl_soft", fl(20.0)),
+            ("hsl_temp", fl(12.0)),
+            ("hsl_tint", fl(-4.0)),
+            ("hsl_sat", fl(112.0)),
+            ("vignette_amount", fl(-1.5)),
+            ("vignette_midpoint", fl(45.0)),
+            ("vignette_roundness", fl(20.0)),
+            ("vignette_feather", fl(60.0)),
+        ],
+    );
+
+    let cx = cx(Tick::ZERO, 1.0);
+    let ops = vec![FxOp::eval(&lumetri, &cx, w as usize, h as usize).expect("lumetri op")];
+    let fx = Arc::new(LayerFx { size: (w, h), decimation: 1, ops });
+
+    let plan = FramePlan::Layers {
+        width: w as usize,
+        height: h as usize,
+        layers: vec![PlanLayer {
+            frame,
+            matrix: Affine::IDENTITY,
+            opacity: 1.0,
+            blend: Blend::Normal,
+            fx: Some(fx),
+            input: Some(input_tf),
+        }],
+    };
+
+    let cpu_out = execute_cpu(&plan).over_black_rgba8();
+    c.composite(&plan);
+    let (_, _, gpu_out) = c.read_output().expect("readback");
+
+    let (p99, mean, max) = stats8(&cpu_out, &gpu_out, &vec![true; (w * h) as usize]);
+    eprintln!("C2.2 GPU YUV log clip full Lumetri chain: max {max}, mean {mean:.4}, p99 {p99}");
+    assert!(p99 <= 3 && mean < 0.5 && max <= 6, "YUV log clip composited 8-bit: p99 {p99}, mean {mean:.4}, max {max}");
+}
+
 /// C1.7: External `.cube` (with 1D shaper + 3D cube and custom domains) and `.3dl` LUTs
 /// in `input_lut` and `look_lut` match the CPU `Lut::apply` reference across SDR and HDR.
 #[test]

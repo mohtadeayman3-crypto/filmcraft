@@ -4,9 +4,9 @@
 //!
 //! A sequence whose pipeline is "plain" (Rec. 709 working space without wide gamut) and media
 //! whose metadata says Rec. 709 / sRGB / linear take the original fast path unchanged. On such a
-//! sequence, display-referred HDR and wide-gamut Y'CbCr (PQ, HLG, BT.2020, P3) stays on the GPU
-//! path as well, with its input transform run in the compositor's shader ([`gpu_input`]); log
-//! media and the other pipelines are converted here, on the CPU.
+//! sequence, display-referred HDR, wide-gamut and camera-log Y'CbCr (PQ, HLG, BT.2020, P3,
+//! S-Log3, LogC3/4, V-Log, etc.) stays on the GPU path as well, with its input transform run in the
+//! compositor's shader ([`gpu_input`]); non-Y'CbCr frames and other pipelines are converted here, on the CPU.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -54,10 +54,10 @@ pub fn input_transform(cs: ColorSpace, range: Range, pipe: &ColorPipeline, peak_
     t
 }
 
-/// The input transform of a frame the GPU compositor can colour manage itself (#965): a Y'CbCr
-/// frame of display-referred HDR or wide-gamut media (PQ, HLG, BT.2020, P3) on a plain pipeline,
-/// whose working → monitor transform is the identity. None for log media (camera-gamut
-/// compression), RGB frames and other pipelines, which [`decode`] converts on the CPU.
+/// The input transform of a frame the GPU compositor can colour manage itself (#965, C2.2): a Y'CbCr
+/// frame of display-referred HDR, wide-gamut, or camera-log media (PQ, HLG, BT.2020, P3, S-Log3,
+/// LogC3/4, V-Log, etc.) on a plain pipeline, whose working → monitor transform is the identity.
+/// None for non-Y'CbCr frames and other pipelines, which [`decode`] converts on the CPU.
 pub fn gpu_input(project: &Project, item: ItemId, pipe: &ColorPipeline, cs: ColorSpace, frame: &VideoFrame) -> Option<Arc<InputTransform>> {
     if !pipe.is_plain() || !matches!(frame.data, filmcraft_frame::PixelData::Yuv8 { .. } | filmcraft_frame::PixelData::Yuv16 { .. }) {
         return None;

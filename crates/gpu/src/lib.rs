@@ -83,6 +83,7 @@ pub struct GpuCompositor {
     output: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     accum_readback_buf: Option<(wgpu::Buffer, u64)>,
     uploads: HashMap<(usize, u32, u32), Uploaded>,
+    decode_tables: HashMap<(filmcraft_color::Curve, filmcraft_color::Range), (wgpu::Texture, wgpu::TextureView)>,
     clock: u64,
     dummy: wgpu::TextureView,
     /// The effect stage (None on devices without compute shaders or storage textures: layers
@@ -294,6 +295,7 @@ impl GpuCompositor {
                 tex_entry(2),
                 tex_entry(3),
                 tex_entry(5),
+                tex_entry(6),
             ],
         });
         let blend_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -310,6 +312,7 @@ impl GpuCompositor {
                 tex_entry(3),
                 tex_entry(4),
                 tex_entry(5),
+                tex_entry(6),
             ],
         });
         let final_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -419,6 +422,7 @@ impl GpuCompositor {
             output: None,
             accum_readback_buf: None,
             uploads: HashMap::new(),
+            decode_tables: HashMap::new(),
             clock: 0,
             dummy,
             fx,
@@ -428,6 +432,36 @@ impl GpuCompositor {
             cpu_transitions: 0,
             uploaded_bytes: 0,
         }
+    }
+
+    /// Retrieve or upload the 8192×1 R32Float texture holding the 1D decode table for a camera log curve.
+    fn get_decode_table(&mut self, curve: filmcraft_color::Curve, range: filmcraft_color::Range) -> wgpu::TextureView {
+        let key = (curve, range);
+        if let Some((_, view)) = self.decode_tables.get(&key) {
+            return view.clone();
+        }
+        let dt = filmcraft_color::DecodeTable::for_curve(curve, range);
+        let n = dt.values.len() as u32;
+        let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("decode-table"),
+            size: wgpu::Extent3d { width: n, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let bytes: Vec<u8> = dt.values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            &bytes,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(n * 4), rows_per_image: Some(1) },
+            wgpu::Extent3d { width: n, height: 1, depth_or_array_layers: 1 },
+        );
+        let view = tex.create_view(&Default::default());
+        self.decode_tables.insert(key, (tex, view.clone()));
+        view
     }
 
     fn target(
@@ -634,6 +668,7 @@ impl GpuCompositor {
                 filmcraft_color::GpuCurve::Linear => 1.0,
                 filmcraft_color::GpuCurve::Pq => 2.0,
                 filmcraft_color::GpuCurve::Hlg => 3.0,
+                filmcraft_color::GpuCurve::Log(..) => 4.0,
             };
             let (hl, hk) = p.hlg.unwrap_or(([0.0; 3], 0.0));
             let mx = p.matrix.unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
@@ -651,6 +686,7 @@ impl GpuCompositor {
             ];
             q
         });
+        let compress = src.input.map_or(0.0, |p| if p.compress { 1.0 } else { 0.0 });
         let base = [
             m.a as f32,
             m.b as f32,
@@ -679,7 +715,7 @@ impl GpuCompositor {
             blend.index() as f32,
             src.alpha,
             0.0,
-            0.0,
+            compress,
         ];
         let mut u = [0.0; UNIFORM_FLOATS];
         u[..28].copy_from_slice(&base);
@@ -797,6 +833,12 @@ impl GpuCompositor {
                     // Effect sources use the working pixel center, avoiding interpolated vertex coordinates.
                     su[26] = n as f32;
                     let sbuf = self.uniform_buffer(&su);
+                    let lut_view = match src.input {
+                        Some(filmcraft_color::GpuInputParams { curve: filmcraft_color::GpuCurve::Log(c, r), .. }) => {
+                            self.get_decode_table(c, r)
+                        }
+                        _ => self.dummy.clone(),
+                    };
                     let sbg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("fx-source"),
                         layout: &self.layer_bgl,
@@ -806,6 +848,7 @@ impl GpuCompositor {
                             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&views[1]) },
                             wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&views[2]) },
                             wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&views[3]) },
+                            wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&lut_view) },
                         ],
                     });
                     match self.fx.as_mut() {
@@ -836,14 +879,26 @@ impl GpuCompositor {
                     (Self::uniforms(&src, &m, l.opacity, l.blend, (w, h)), views)
                 }
             };
+            let has_job = job.is_some();
             jobs.push(job);
             let buf = self.uniform_buffer(&u);
+            let lut_view = if has_job {
+                self.dummy.clone()
+            } else {
+                match src.input {
+                    Some(filmcraft_color::GpuInputParams { curve: filmcraft_color::GpuCurve::Log(c, r), .. }) => {
+                        self.get_decode_table(c, r)
+                    }
+                    _ => self.dummy.clone(),
+                }
+            };
             let mut entries = vec![
                 wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&tex[0]) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&tex[1]) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&tex[2]) },
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&tex[3]) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&lut_view) },
             ];
             let (layout, region) = match (&backdrop_view, l.blend.reads_destination()) {
                 (Some(b), true) => {
@@ -1002,6 +1057,7 @@ impl GpuCompositor {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&views[1]) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&views[2]) },
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&views[3]) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&self.dummy) },
             ],
         });
         let stage = self.fx.as_mut()?;

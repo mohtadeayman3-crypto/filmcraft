@@ -552,3 +552,55 @@ fn hdr_input_gpu_matches_cpu() {
         assert!(apart > 20, "{name}: colour management changed nothing ({apart})");
     }
 }
+
+/// Camera log Y'CbCr on a Rec. 709 sequence (C2.2): the shader's decode table sampling
+/// and gamut compression match the CPU running the same `InputTransform`.
+#[test]
+fn log_input_gpu_matches_cpu() {
+    use filmcraft_color::{ColorInfo, ColorPipeline, ColorSpace, InputTransform, Matrix, Primaries, Range, Transfer};
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (256u32, 6u32);
+    let chroma = [(512, 512), (300, 760), (760, 300), (64, 512), (960, 960), (512, 64)];
+    let y: Vec<u16> = (0..h).flat_map(|_| (0..w).map(|x| (64 + x * 876 / 255) as u16)).collect();
+    let cb: Vec<u16> = (0..h).flat_map(|r| std::iter::repeat_n(chroma[r as usize].0, w as usize)).collect();
+    let cr: Vec<u16> = (0..h).flat_map(|r| std::iter::repeat_n(chroma[r as usize].1, w as usize)).collect();
+    let data = PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(cb), Arc::new(cr)], chroma: Chroma::C444, bits: 10, alpha: None };
+    let color = ColorInfo { matrix: Matrix::Bt709, transfer: Transfer::Bt709, primaries: Primaries::Bt709, range: Range::Limited };
+    let log_spaces = [
+        ColorSpace::SLog3SGamut3Cine,
+        ColorSpace::SLog3SGamut3,
+        ColorSpace::VLogVGamut,
+        ColorSpace::CLog2CinemaGamut,
+        ColorSpace::CLog3CinemaGamut,
+        ColorSpace::LogC3Awg3,
+        ColorSpace::LogC4Awg4,
+        ColorSpace::AppleLog,
+        ColorSpace::DLogDGamut,
+        ColorSpace::FLogFGamut,
+        ColorSpace::FLog2FGamut,
+        ColorSpace::FLog2CFGamutC,
+    ];
+    for cs in log_spaces {
+        let frame = Arc::new(VideoFrame { width: w, height: h, data: data.clone(), color, par: (1, 1), pts: Default::default() });
+        let t = Arc::new(InputTransform::new(cs, Range::Limited, &ColorPipeline::REC709, None));
+        let params = t.gpu_params().expect("gpu_params must be Some for log curves");
+        assert!(matches!(params.curve, filmcraft_color::GpuCurve::Log(..)));
+        let layer = PlanLayer { input: Some(t), ..PlanLayer::new(frame.clone(), Affine::IDENTITY, 1.0, Blend::Normal) };
+        let plan = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![layer] };
+        let cpu = execute_cpu(&plan).over_black_rgba8();
+        c.composite(&plan);
+        let (_, _, gpu) = c.read_output().expect("readback");
+        let error = cpu.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+        let plain = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
+        c.composite(&plain);
+        let (_, _, unmanaged) = c.read_output().expect("readback");
+        let apart = cpu.iter().zip(&unmanaged).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+        eprintln!("{cs:?}: max error {error}, unmanaged differs by up to {apart}");
+        assert!(error <= 2, "{cs:?}: GPU differs from the CPU by up to {error} codes");
+        assert!(apart > 20, "{cs:?}: colour management changed nothing ({apart})");
+    }
+}
