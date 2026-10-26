@@ -150,9 +150,11 @@ fn compare_pixels(cpu_rgba8: &[u8], gpu_rgba8: &[u8], w: u32, h: u32) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let movie_path = Path::new("C:/Users/Mohtady/Downloads/C1102.MP4");
+    let default_media = "test_assets/C1102.MP4";
+    let media_env = std::env::var("FILMCRAFT_TEST_MEDIA").unwrap_or_else(|_| default_media.to_string());
+    let movie_path = Path::new(&media_env);
     if !movie_path.exists() {
-        eprintln!("Error: Movie not found at {:?}", movie_path);
+        eprintln!("Error: Movie not found at {:?}. Set FILMCRAFT_TEST_MEDIA env var.", movie_path);
         return Ok(());
     }
 

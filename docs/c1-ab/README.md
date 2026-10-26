@@ -4,26 +4,26 @@
 
 ## 1. Candidate Footage Search & Selection
 
-A read-only scan of video files ($\ge 20\text{ MB}$) across `C:\Users\Mohtady\Downloads`, `Videos`, `Desktop`, and `D:\` (excluding `D:\FilmCraftX`, `node_modules`, and `target`) identified 105 files, probed with `filmcraft-cli probe`. The top 10 candidates are:
+A read-only scan of local video files ($\ge 20\text{ MB}$) across media storage locations (excluding the repository, `node_modules`, and `target`) identified candidate media files, probed with `filmcraft-cli probe`. The candidate summary:
 
-| # | File | Size (MB) | Duration (s) | Format / Resolution / FPS | Last Modified | Notes |
-|---:|---|---:|---:|---|---|---|
-| **1** | **`C:\Users\Mohtady\Downloads\C1102.MP4`** | **3292.1 MB** | **279.8 s** | **3840×2160 @ 25 fps, H.264 High 4:2:0 Full-Range** | **2023-04-24 04:27** | **Selected:** Genuine **Sony ZV-E10** camera file (`NonRealTimeMeta` XML: `CaptureGammaEquation="s-log3-cine"`, `CaptureColorPrimaries="s-gamut3-cine"`). |
-| 2 | `C:\Users\Mohtady\Downloads\إعلان أكاديمية الفون التابع لوزارة الثقافة-004.mp4` | 2708.0 MB | 218.7 s | 3840×2160 @ 30 fps, H.264 High Bt709 | 2026-09-28 16:02 | Graded Rec. 709 master |
-| 3 | `D:\protfolio\إعلان مبادرة استاند باي.mp4` | 909.6 MB | 74.4 s | 3840×2160 @ 30 fps, H.264 High Bt709 | 2026-09-28 18:00 | Graded Rec. 709 master |
-| 4 | `D:\protfolio\إعلان أكاديمية ماسبيرو التابعة للتلفزيون المصري.mp4` | 847.1 MB | 71.1 s | 3840×2160 @ 30 fps, H.264 High Bt709 | 2026-09-28 18:00 | Graded Rec. 709 master |
-| 5 | `C:\Users\Mohtady\Downloads\protfolio-20260928T115122Z-1-003\protfolio\برومو برنامج الاعلامية سلمي معروف علي قناة الشمس.mp4` | 365.0 MB | 43.8 s | 3840×2160 @ 30 fps, H.264 High Bt709 | 2026-09-28 15:53 | Graded Rec. 709 master |
-| 6 | `C:\Users\Mohtady\Downloads\0927 (1)(1)-upscaled.mp4` | 160.0 MB | 222.6 s | 3840×2160 @ 30 fps, H.264 High sRGB | 2026-09-29 05:48 | Upscaled sRGB |
-| 7 | `C:\Users\Mohtady\Downloads\0925 (1).mp4` | 22.8 MB | 4.9 s | 4096×1746 @ 30 fps, H.264 High Bt709 | 2026-09-25 15:35 | Short DCI-4K clip |
-| 8 | `C:\Users\Mohtady\Downloads\إعلان وزارة السياحة المصرية  مشروع (طلبة بكالريوس جامعة القاهرة) .mp4` | 723.7 MB | 101.1 s | 2560×1440 @ 30 fps, H.264 High Bt709 | 2026-09-28 16:01 | 1440p Rec. 709 |
-| 9 | `C:\Users\Mohtady\Downloads\1007.mp4` | 798.2 MB | 133.6 s | 1920×1080 @ 50 fps, H.264 Main Bt709 | 2026-10-08 00:54 | 1080p50 Rec. 709 |
-| 10 | `C:\Users\Mohtady\Downloads\0927 (1)(8).mp4` | 1223.3 MB | 262.3 s | 1920×1080 @ 50 fps, H.264 Main Bt709 | 2026-09-30 04:48 | 1080p50 Rec. 709 |
+| # | File | Size (MB) | Duration (s) | Format / Resolution / FPS | Notes |
+|---:|---|---:|---:|---|---|
+| **1** | **`C1102.MP4`** | **3292.1 MB** | **279.8 s** | **3840×2160 @ 25 fps, H.264 High 4:2:0 Full-Range** | **Selected:** Genuine **Sony ZV-E10** camera file (`NonRealTimeMeta` XML: `CaptureGammaEquation="s-log3-cine"`, `CaptureColorPrimaries="s-gamut3-cine"`). |
+| 2 | `sample_master_01.mp4` | 2708.0 MB | 218.7 s | 3840×2160 @ 30 fps, H.264 High Bt709 | Graded Rec. 709 master |
+| 3 | `sample_master_02.mp4` | 909.6 MB | 74.4 s | 3840×2160 @ 30 fps, H.264 High Bt709 | Graded Rec. 709 master |
+| 4 | `sample_master_03.mp4` | 847.1 MB | 71.1 s | 3840×2160 @ 30 fps, H.264 High Bt709 | Graded Rec. 709 master |
+| 5 | `sample_promo_01.mp4` | 365.0 MB | 43.8 s | 3840×2160 @ 30 fps, H.264 High Bt709 | Graded Rec. 709 master |
+| 6 | `sample_srgb_01.mp4` | 160.0 MB | 222.6 s | 3840×2160 @ 30 fps, H.264 High sRGB | Upscaled sRGB |
+| 7 | `sample_clip_4k.mp4` | 22.8 MB | 4.9 s | 4096×1746 @ 30 fps, H.264 High Bt709 | Short DCI-4K clip |
+| 8 | `sample_1440p.mp4` | 723.7 MB | 101.1 s | 2560×1440 @ 30 fps, H.264 High Bt709 | 1440p Rec. 709 |
+| 9 | `sample_1080p50.mp4` | 798.2 MB | 133.6 s | 1920×1080 @ 50 fps, H.264 Main Bt709 | 1080p50 Rec. 709 |
+| 10 | `sample_1080p_02.mp4` | 1223.3 MB | 262.3 s | 1920×1080 @ 50 fps, H.264 Main Bt709 | 1080p50 Rec. 709 |
 
 ---
 
 ## 2. Test Configuration (`C1102.MP4`, Frame 3500 at `t = 140.00 s`)
 
-- **Source Clip:** `C:\Users\Mohtady\Downloads\C1102.MP4` (`3840×2160`, 25.0 fps, `279.8 s` / `6995` frames)
+- **Source Clip:** `C1102.MP4` (`3840×2160`, 25.0 fps, `279.8 s` / `6995` frames)
 - **Interpret Footage Colour Space:** `slog3-sgamut3cine` (`Sony S-Log3 / S-Gamut3.Cine`)
 - **Sequence Settings:** `3840×2160` @ `25.0 fps`, working space `Rec. 709 (Linear)`
 - **Selected Frame:** Frame `3500` (`t = 140.00 s`, exact midpoint of the `279.8 s` clip)
