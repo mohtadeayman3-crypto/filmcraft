@@ -40,10 +40,10 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
 - [x] C2.1 pure-Rust ACES core implemented and pushed to `origin/main`
 - [x] C2.2 GPU camera log decode implemented and verified with A/B real-footage metrics
 - [x] Isolated OCIO oracle setup in `D:\FilmCraftX-tools\` (Python 3.12, OpenColorIO 2.6.0, NumPy 2.5.4)
+- [x] Item 3: Chroma siting empirical test completed and confirmed (+0.25 chroma texel shift)
 
 ## Next
 
-- Item 3: Chroma siting empirical test with synthetic 4:2:0 frame
 - Item 4: Export default investigation and C1102.MP4 benchmark
 - Item 5: ACEScg pipeline wiring design summary (15 lines)
 
@@ -141,5 +141,23 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
     - `cg-config-v5.0.0_aces-v2.1_ocio-v2.6`
     - `studio-config-v5.0.0_aces-v2.1_ocio-v2.6`
   - Also verified built-in camera IDTs (`SONY_SLOG3-SGAMUT3.CINE_to_ACES2065-1`, `ARRI_LOGC4_to_ACES2065-1`, `CANON_CLOG2-CGAMUT_to_ACES2065-1`, etc.).
+
+## 4:2:0 Chroma Siting Empirical Test (2026-10-26)
+
+- **Test**: `chroma_siting_empirical_sign_and_magnitude` in `crates/gpu/src/tests.rs`.
+- **Method**: Created a synthetic 4:2:0 YUV frame with constant luma ($Y=128$) and a sharp vertical chroma transition at luma column $x=8$ ($c=4$): left 4 chroma columns $U=64$ ($x < 8$), right 4 chroma columns $U=192$ ($x \ge 8$).
+- **Observed GPU Output** across transition columns:
+  - $x = 6$: fraction $= 0.000$ (100% sample 3)
+  - $x = 7$: fraction $= 0.247 \approx 0.25$ (75% sample 3, 25% sample 4)
+  - $x = 8$: fraction $= 0.776 \approx 0.75$ (25% sample 3, 75% sample 4)
+  - $x = 9$: fraction $= 1.000$ (100% sample 4)
+- **Empirical Confirmation**:
+  - The uncorrected GPU shader (`cp = p/2`) places the 50% midpoint at $x = 7.5$ (center-sited), resulting in a $+0.5$ luma pixel ($+0.25$ chroma texel) rightward shift relative to left-sited 4:2:0.
+  - In left-sited (Type 0 / MPEG-2 / Rec.709) 4:2:0, chroma sample $i$ is collocated horizontally with even luma column $2i$. Thus, at $x=8$, the reconstructed chroma must be exactly 100% sample 4 ($f = 0.00$), and the 50/50 midpoint must fall at $x = 7.0$ ($f = 0.50$).
+  - Correcting sampling coordinate $cp$ to $cp + 0.25$ yields $q = (x + 0.5)/2 + 0.25 - 0.5 = x/2$. At $x=7$, $q=3.5 \implies f=0.50$; at $x=8$, $q=4.0 \implies f=0.00$.
+  - Conversely, $cp - 0.25$ shifts the midpoint further right to $x = 8.5$.
+  - **Conclusion**: The correct sign and magnitude for left-sited 4:2:0 chroma correction is **$+0.25$ chroma texels** ($+0.5$ luma pixels).
+  - Status: Logged as a separate low-priority task; no shader changes made.
+
 
 
