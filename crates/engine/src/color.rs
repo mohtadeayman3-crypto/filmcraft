@@ -253,11 +253,19 @@ fn color_settings(s: &mut Session, p: &Value) -> Result<Value> {
             let c = &mut q.settings.color;
             if let Some(w) = ws {
                 c.working = w;
+                if w.is_aces() {
+                    c.wide_gamut = false;
+                    c.auto_tone_map = false;
+                }
             }
-            if let Some(v) = wide {
+            if let Some(v) = wide
+                && !c.working.is_aces()
+            {
                 c.wide_gamut = v;
             }
-            if let Some(v) = tone {
+            if let Some(v) = tone
+                && !c.working.is_aces()
+            {
                 c.auto_tone_map = v;
             }
             q.settings.working_space = c.working.label().into();

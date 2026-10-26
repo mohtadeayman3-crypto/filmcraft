@@ -34,6 +34,8 @@ pub enum GradeSpace {
     Pq { white: f32, norm: f32 },
     /// HLG signal of a display with peak `white` cd/m² (`gamma` = its system gamma).
     Hlg { white: f32, gamma: f32 },
+    /// ACEScct grading space (AMPAS S-2016-001) for ACEScg working space.
+    AcesCct,
 }
 
 impl GradeSpace {
@@ -44,17 +46,18 @@ impl GradeSpace {
             WorkingSpace::Rec709 => GradeSpace::Sdr,
             WorkingSpace::Rec2100Pq => GradeSpace::Pq { white, norm: pq_inverse_eotf(white / 10_000.0) },
             WorkingSpace::Rec2100Hlg => GradeSpace::Hlg { white, gamma: 1.2 + 0.42 * (white / 1000.0).log10() },
+            WorkingSpace::AcesCg => GradeSpace::AcesCct,
         }
     }
 
     pub fn is_hdr(&self) -> bool {
-        !matches!(self, GradeSpace::Sdr)
+        matches!(self, GradeSpace::Pq { .. } | GradeSpace::Hlg { .. })
     }
 
     /// HDR White in cd/m² (None for SDR).
     pub fn white_nits(&self) -> Option<f32> {
         match *self {
-            GradeSpace::Sdr => None,
+            GradeSpace::Sdr | GradeSpace::AcesCct => None,
             GradeSpace::Pq { white, .. } | GradeSpace::Hlg { white, .. } => Some(white),
         }
     }
@@ -76,6 +79,7 @@ impl GradeSpace {
                 let k = yd.powf((1.0 - gamma) / gamma);
                 fd.map(|v| hlg_oetf(v * k))
             }
+            GradeSpace::AcesCct => c.map(|v| crate::aces::acescct_encode(v as f64) as f32),
         }
     }
 
@@ -98,6 +102,7 @@ impl GradeSpace {
                 let k = ys.powf(gamma - 1.0);
                 es.map(|e| e * k * white / REFERENCE_WHITE_NITS as f32)
             }
+            GradeSpace::AcesCct => v.map(|q| crate::aces::acescct_decode(q as f64) as f32),
         }
     }
 

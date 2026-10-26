@@ -762,7 +762,7 @@ impl FxOp {
             FxOp::VideoLimiter { max, comp, axis, warning_color, .. } => *axis <= 3 && max.is_finite() && comp.is_finite() && fin(warning_color),
             FxOp::Lumetri(l) => {
                 let gs_ok = |gs: filmcraft_color::GradeSpace| match gs {
-                    filmcraft_color::GradeSpace::Sdr => true,
+                    filmcraft_color::GradeSpace::Sdr | filmcraft_color::GradeSpace::AcesCct => true,
                     filmcraft_color::GradeSpace::Pq { white, norm } => fin(&[white, norm]),
                     filmcraft_color::GradeSpace::Hlg { white, gamma } => fin(&[white, gamma]),
                 };

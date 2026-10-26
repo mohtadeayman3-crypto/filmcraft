@@ -46,10 +46,12 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
 - [x] Hygiene check: Anonymized personal paths and committed (`3a829356`)
 - [x] Git push: Branch `main` pushed to `origin/main` (`ab3f27fc..3a829356`), verified matching HEAD
 - [x] Full-sequence 10-second export benchmark completed (250 frames, clips + transition + title + speed change + Lumetri): 1.70× raw speedup, 7.46× graded speedup, 100% GPU rendered
+- [x] C2.3: Baseline golden hashes & project schema bump (v15 -> v16, commit `744b6bd5`)
+- [x] C2.4: WorkingSpace::AcesCg, GradeSpace::AcesCct, schema v16 roundtrip, and UI gating
 
 ## Next
 
-Awaiting user approval of revised Stage A plan (C2.3 to C2.9) before implementing Stage A.
+Stage A tasks C2.3 and C2.4 completed. Awaiting user review before proceeding to Task F1 (default export `gpu_rendering` to `Auto` in fork).
 
 ## C2.1 Pure-Rust ACES Core Completion Summary (2026-10-26)
 
@@ -258,3 +260,38 @@ Tested using `cargo run --release -p filmcraft-gpu --example seq_bench` on genui
 
 
 
+
+## C2.3 & C2.4 Completion Summary (2026-10-26)
+
+### C2.3: Baseline Golden Hashes & Project Schema Bump (v15 -> v16)
+- **Golden Hash Assertions**:
+  - Added `legacy_golden_outputs_remain_unchanged` unit test in `crates/color/src/transform.rs`.
+  - Computes FNV-1a 64-bit golden hashes across:
+    - Sony S-Log3 0..1 ramp (hash `0x2a2c74d5336f73c1`)
+    - Rec. 2100 PQ 0..1 ramp (hash `0x7aef92eef85311e3`)
+    - 75% Rec. 709 color bars (hash `0x39ba618821fdbe0a`)
+    - HDR display output (hash `0xf7cfa4dd0f33d7b4`)
+  - Validates exact numeric output values at reference points (S-Log3 18% mid-grey = 0.1862021, PQ 203 nits reference white = 0.6283325, Rec. 709 75% white = 0.52252173).
+- **Project Schema Bump**:
+  - Schema bumped from `15` to `16` in `crates/format/src/lib.rs` (`SCHEMA_VERSION = 16`).
+  - Added no-op migration `v15_to_v16` in `MIGRATIONS`.
+  - Documented schema v14, v15, and v16 in `docs/project-files.md`.
+  - Added unit test `v15_project_loads_and_resaves_identically` in `crates/format/src/lib.rs`.
+- Committed as `744b6bd5`.
+
+### C2.4: ACEScg Working Space, GradeSpace::AcesCct, Schema v16 Roundtrip, and UI Gating
+- **Core Pipeline Additions**:
+  - `crates/color/src/spaces.rs`: Added `WorkingSpace::AcesCg` (id `"aces-cg"`, label `"ACEScg (AP1 Linear)"`, `is_hdr = false`, `is_aces = true`, `output_space = Rec709`).
+  - `crates/color/src/spaces.rs`: `ColorPipeline::working_gamut()` returns `Gamut::Ap1` for `WorkingSpace::AcesCg`.
+  - `crates/color/src/grade.rs`: Added `GradeSpace::AcesCct` mapped to `WorkingSpace::AcesCg`, implementing `acescct_encode` and `acescct_decode` transfers.
+  - `crates/format/tests/fixtures.rs`: Added `aces_cg_project_roundtrips_in_v16` verifying an ACEScg sequence saves as schema v16, loads cleanly without migration, and preserves `WorkingSpace::AcesCg`.
+- **UI Gating & Enforcement**:
+  - `crates/ui-egui/src/panels/sequence_settings.rs` & `color_dialogs.rs`:
+    - In `Working Color Space` dropdown and radio buttons, HDR working spaces (`Rec2100Pq`, `Rec2100Hlg`) are disabled when `AcesCg` is active with clear hover text: *"HDR working spaces in ACES mode are planned for Stage B (ACES 2.0)."*
+    - Wide gamut checkbox is disabled with tooltip: *"Not applicable in ACEScg (compositing uses AP1 scene-referred primaries)."*
+    - Auto tone map checkbox is disabled with tooltip: *"Not applicable in ACEScg (uses camera IDTs to AP1 linear)."*
+    - Clear status badge rendered: *"ACEScg working space active (Stage A: SDR FilmCraft View output)"*.
+  - `crates/engine/src/color.rs` & `commands.rs`:
+    - `sequence.colorSettings` and `sequence.settings` commands force `wide_gamut = false` and `auto_tone_map = false` whenever `WorkingSpace::AcesCg` is selected.
+  - `crates/engine/src/color_tests.rs`: Added `aces_cg_working_space_and_gating_through_commands` asserting command gating.
+  - `crates/ui-egui/tests/it/color_ui.rs`: Added `sequence_color_dialog_aces_cg_gating` asserting UI dialog flow.

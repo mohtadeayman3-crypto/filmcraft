@@ -244,11 +244,14 @@ fn changes(d: &SequenceSettingsDraft, cur: &SequenceSettings, cur_name: &str) ->
     if d.working_space != cur.color.working.id() {
         p.insert("workingSpace".into(), json!(d.working_space));
     }
-    if d.wide_gamut != cur.color.wide_gamut {
-        p.insert("wideGamut".into(), json!(d.wide_gamut));
+    let is_aces = d.working_space == "aces-cg";
+    let wide = if is_aces { false } else { d.wide_gamut };
+    let tone = if is_aces { false } else { d.auto_tone_map };
+    if wide != cur.color.wide_gamut {
+        p.insert("wideGamut".into(), json!(wide));
     }
-    if d.auto_tone_map != cur.color.auto_tone_map {
-        p.insert("autoToneMap".into(), json!(d.auto_tone_map));
+    if tone != cur.color.auto_tone_map {
+        p.insert("autoToneMap".into(), json!(tone));
     }
     p
 }
@@ -430,21 +433,38 @@ fn general(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, cur: &SequenceSetti
 fn color(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, elems: &mut Elems) {
     let font = egui::TextStyle::Body.resolve(ui.style());
     let label_w = ui.painter().layout_no_wrap(tl!("Working Color Space:").to_string(), font, egui::Color32::WHITE).size().x;
+    let is_aces = WorkingSpace::parse(&d.working_space).is_some_and(|w| w.is_aces());
     row(ui, label_w, "Working Color Space:", true, |ui| {
         let shown = WorkingSpace::parse(&d.working_space).map_or(d.working_space.clone(), |w| t(w.label()).to_string());
         let resp = egui::ComboBox::from_id_salt("seq-settings-working-space").selected_text(&shown).width(220.0).show_ui(ui, |ui| {
             for w in WorkingSpace::ALL {
-                let o = ui.selectable_value(&mut d.working_space, w.id().to_string(), t(w.label()));
+                let disabled_hdr = is_aces && w.is_hdr();
+                let o = if disabled_hdr {
+                    ui.add_enabled(false, egui::Button::new(t(w.label())).wrap_mode(egui::TextWrapMode::Extend))
+                        .on_disabled_hover_text(tl!("HDR working spaces in ACES mode are planned for Stage B (ACES 2.0)."))
+                } else {
+                    ui.selectable_value(&mut d.working_space, w.id().to_string(), t(w.label()))
+                };
                 elems.push((format!("sequenceSettings.workingSpace.option.{}", w.id()), o.rect, w.label().to_string()));
             }
         });
         elems.push(("sequenceSettings.workingSpace".into(), resp.response.rect, shown));
     });
     ui.add_space(4.0);
-    let r = ui.checkbox(&mut d.wide_gamut, tl!("Wide gamut color (composite in BT.2020)"));
-    elems.push(("sequenceSettings.wideGamut".into(), r.rect, d.wide_gamut.to_string()));
-    let r = ui.checkbox(&mut d.auto_tone_map, tl!("Auto Tone Map Media (HDR and log into SDR)"));
-    elems.push(("sequenceSettings.autoToneMap".into(), r.rect, d.auto_tone_map.to_string()));
+    if is_aces {
+        let r = ui.add_enabled(false, egui::Checkbox::new(&mut false, tl!("Wide gamut color (composite in BT.2020)")))
+            .on_disabled_hover_text(tl!("Not applicable in ACEScg (compositing uses AP1 scene-referred primaries)."));
+        elems.push(("sequenceSettings.wideGamut".into(), r.rect, "false".into()));
+        let r = ui.add_enabled(false, egui::Checkbox::new(&mut false, tl!("Auto Tone Map Media (HDR and log into SDR)")))
+            .on_disabled_hover_text(tl!("Not applicable in ACEScg (uses camera IDTs to AP1 linear)."));
+        elems.push(("sequenceSettings.autoToneMap".into(), r.rect, "false".into()));
+        ui.label(egui::RichText::new(tl!("ACEScg working space active (Stage A: SDR FilmCraft View output)")).weak());
+    } else {
+        let r = ui.checkbox(&mut d.wide_gamut, tl!("Wide gamut color (composite in BT.2020)"));
+        elems.push(("sequenceSettings.wideGamut".into(), r.rect, d.wide_gamut.to_string()));
+        let r = ui.checkbox(&mut d.auto_tone_map, tl!("Auto Tone Map Media (HDR and log into SDR)"));
+        elems.push(("sequenceSettings.autoToneMap".into(), r.rect, d.auto_tone_map.to_string()));
+    }
 }
 
 fn vr(ui: &mut egui::Ui, elems: &mut Elems) {

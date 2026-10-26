@@ -254,3 +254,25 @@ fn hdr_lumetri_and_mastering_metadata_through_commands() {
     let r = s.execute("media.colorInfo", json!({"item": item.0})).unwrap();
     assert!(r["hdrMetadata"].is_null() && r["toneMapPeakNits"].is_null(), "{r}");
 }
+
+#[test]
+fn aces_cg_working_space_and_gating_through_commands() {
+    let mut s = demo();
+    let r = s.execute("sequence.colorSettings", json!({"workingSpace": "aces-cg", "wideGamut": true, "autoToneMap": true})).unwrap();
+    assert_eq!(r["workingSpace"], "aces-cg");
+    assert_eq!(r["label"], "ACEScg (AP1 Linear)");
+    assert_eq!(r["wideGamut"], false, "wide gamut is disabled in ACEScg");
+    assert_eq!(r["autoToneMap"], false, "auto tone map is disabled in ACEScg");
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.settings.working_space, "ACEScg (AP1 Linear)");
+    assert!(q.settings.color.is_aces());
+    assert_eq!(q.settings.color.working_gamut(), filmcraft_color::Gamut::Ap1);
+    assert_eq!(q.settings.color.wide_gamut, false);
+    assert_eq!(q.settings.color.auto_tone_map, false);
+
+    // Also via sequence.settings
+    s.execute("sequence.settings", json!({"workingSpace": "aces-cg", "wideGamut": true})).unwrap();
+    let q2 = s.active_sequence().unwrap();
+    assert_eq!(q2.settings.color.working, filmcraft_color::WorkingSpace::AcesCg);
+    assert_eq!(q2.settings.color.wide_gamut, false);
+}

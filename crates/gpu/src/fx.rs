@@ -214,6 +214,7 @@ fn steps(op: &FxOp) -> Vec<Step> {
                 filmcraft_color::GradeSpace::Sdr => (0u32, 0.0f32, 0.0f32),
                 filmcraft_color::GradeSpace::Pq { white, norm } => (1u32, white, norm),
                 filmcraft_color::GradeSpace::Hlg { white, gamma } => (2u32, white, gamma),
+                filmcraft_color::GradeSpace::AcesCct => (3u32, 0.0f32, 0.0f32),
             };
             if let Some(lut) = &l.input_lut {
                 out.push(lumetri_lut_step(lut, gs_mode, gs_white, gs_p2, 1.0, false));
@@ -258,6 +259,7 @@ fn steps(op: &FxOp) -> Vec<Step> {
                 filmcraft_color::GradeSpace::Sdr => (0u32, 0.0f32, 0.0f32),
                 filmcraft_color::GradeSpace::Pq { white, norm } => (1u32, white, norm),
                 filmcraft_color::GradeSpace::Hlg { white, gamma } => (2u32, white, gamma),
+                filmcraft_color::GradeSpace::AcesCct => (3u32, 0.0f32, 0.0f32),
             };
             let has_adv = l.look > 0 || l.wheels_on || l.curve_mask != 0;
             if let Some(lut) = &l.look_lut {

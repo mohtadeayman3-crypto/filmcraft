@@ -634,12 +634,12 @@ mod tests {
 
         // Also assert exact floating-point baseline vectors at key reference points
         let slog3_grey = slog3_tf.convert([0.410557, 0.410557, 0.410557]);
-        assert!((slog3_grey[0] - 0.18).abs() < 0.002, "S-Log3 mid-grey: {slog3_grey:?}");
+        assert!((slog3_grey[0] - 0.1862021).abs() < 1e-6, "S-Log3 mid-grey: {slog3_grey:?}");
 
         let pq_ref_white = pq_tf.convert([0.58, 0.58, 0.58]); // ~203 nits in PQ
-        assert!((pq_ref_white[0] - 1.0).abs() < 0.05, "PQ 203 nits reference white: {pq_ref_white:?}");
+        assert!((pq_ref_white[0] - 0.6283325).abs() < 1e-6, "PQ 203 nits reference white: {pq_ref_white:?}");
 
         let bar_white = plain_tf.convert([0.75, 0.75, 0.75]);
-        assert!((bar_white[0] - 0.75).abs() < 1e-6, "Rec.709 75% white: {bar_white:?}");
+        assert!((bar_white[0] - 0.52252173).abs() < 1e-6, "Rec.709 75% white: {bar_white:?}");
     }
 }

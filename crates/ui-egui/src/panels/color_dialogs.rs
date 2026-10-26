@@ -109,20 +109,38 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 .default_width(340.0)
                 .show(ctx, |ui| {
                     ui.label(egui::RichText::new(tl!("Working Color Space")).strong());
+                    let is_aces = working_space == "aces-cg";
                     for w in WorkingSpace::ALL {
-                        if radio(app, ui, &format!("colorDialog.working.{}", w.id()), working_space == w.id(), w.label()) {
+                        let disabled_hdr = is_aces && w.is_hdr();
+                        if disabled_hdr {
+                            let r = ui.add_enabled(false, egui::RadioButton::new(false, w.label()))
+                                .on_disabled_hover_text(tl!("HDR working spaces in ACES mode are planned for Stage B (ACES 2.0)."));
+                            app.auto.add(&format!("colorDialog.working.{}", w.id()), r.rect, w.label());
+                        } else if radio(app, ui, &format!("colorDialog.working.{}", w.id()), working_space == w.id(), w.label()) {
                             *working_space = w.id().into();
                         }
                     }
                     ui.add_space(4.0);
-                    let r = ui.checkbox(wide_gamut, tl!("Wide gamut color (composite in BT.2020)"));
-                    app.auto.add("colorDialog.wideGamut", r.rect, "Wide gamut");
-                    let r = ui.checkbox(auto_tone_map, tl!("Auto tone map media (HDR and log into SDR)"));
-                    app.auto.add("colorDialog.autoToneMap", r.rect, "Auto tone map");
+                    if is_aces {
+                        let r = ui.add_enabled(false, egui::Checkbox::new(&mut false, tl!("Wide gamut color (composite in BT.2020)")))
+                            .on_disabled_hover_text(tl!("Not applicable in ACEScg (compositing uses AP1 scene-referred primaries)."));
+                        app.auto.add("colorDialog.wideGamut", r.rect, "Wide gamut");
+                        let r = ui.add_enabled(false, egui::Checkbox::new(&mut false, tl!("Auto tone map media (HDR and log into SDR)")))
+                            .on_disabled_hover_text(tl!("Not applicable in ACEScg (uses camera IDTs to AP1 linear)."));
+                        app.auto.add("colorDialog.autoToneMap", r.rect, "Auto tone map");
+                        ui.label(egui::RichText::new(tl!("ACEScg working space active (Stage A: SDR FilmCraft View output)")).weak());
+                    } else {
+                        let r = ui.checkbox(wide_gamut, tl!("Wide gamut color (composite in BT.2020)"));
+                        app.auto.add("colorDialog.wideGamut", r.rect, "Wide gamut");
+                        let r = ui.checkbox(auto_tone_map, tl!("Auto tone map media (HDR and log into SDR)"));
+                        app.auto.add("colorDialog.autoToneMap", r.rect, "Auto tone map");
+                    }
                     let (ok, cancel) = buttons(app, ui);
                     if ok {
+                        let wide = if is_aces { false } else { *wide_gamut };
+                        let tone = if is_aces { false } else { *auto_tone_map };
                         apply =
-                            Some(("sequence.colorSettings", json!({"workingSpace": working_space, "wideGamut": *wide_gamut, "autoToneMap": *auto_tone_map})));
+                            Some(("sequence.colorSettings", json!({"workingSpace": working_space, "wideGamut": wide, "autoToneMap": tone})));
                     }
                     close = ok || cancel;
                 });

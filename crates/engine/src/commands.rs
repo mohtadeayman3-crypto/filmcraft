@@ -2265,11 +2265,19 @@ fn build() -> Vec<CommandSpec> {
                     let c = &mut q.settings.color;
                     if let Some(w) = working {
                         c.working = w;
+                        if w.is_aces() {
+                            c.wide_gamut = false;
+                            c.auto_tone_map = false;
+                        }
                     }
-                    if let Some(v) = bool_p(&p, "wideGamut") {
+                    if let Some(v) = bool_p(&p, "wideGamut")
+                        && !c.working.is_aces()
+                    {
                         c.wide_gamut = v;
                     }
-                    if let Some(v) = bool_p(&p, "autoToneMap") {
+                    if let Some(v) = bool_p(&p, "autoToneMap")
+                        && !c.working.is_aces()
+                    {
                         c.auto_tone_map = v;
                     }
                     q.settings.working_space = q.settings.color.working.label().into();

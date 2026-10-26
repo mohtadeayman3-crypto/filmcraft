@@ -1994,6 +1994,7 @@ name = "filmcraft-format"
 version = "0.12.0"
 dependencies = [
  "chrono",
+ "filmcraft-color",
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-time",

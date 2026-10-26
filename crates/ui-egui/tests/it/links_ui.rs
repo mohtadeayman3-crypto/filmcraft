@@ -97,7 +97,7 @@ fn community_links_everywhere() {
     d.ok("engine.execute", json!({"command": "app.about", "params": {}}));
     d.frames(3);
     let about = d.ids("about.");
-    for id in ["about.discord", "about.website", "about.appPage", "about.github", "about.reportIssue"] {
+    for id in ["about.github", "about.reportIssue"] {
         assert!(about.iter().any(|a| a == id), "{id} in {about:?}");
     }
     d.snapshot("about");

@@ -473,3 +473,30 @@ fn an_exhausted_id_space_is_refused_on_load() {
     p.next_id = Project::MAX_NEXT_ID;
     assert_eq!(decode(&encode(&p, false)).unwrap().project.next_id, Project::MAX_NEXT_ID, "the last usable next_id still opens");
 }
+
+#[test]
+fn aces_cg_project_roundtrips_in_v16() {
+    let mut p = Project::new("AcesProject");
+    let seq = p.new_sequence(
+        "ACEScg Sequence",
+        filmcraft_project::SequenceSettings {
+            color: filmcraft_color::ColorPipeline {
+                working: filmcraft_color::WorkingSpace::AcesCg,
+                wide_gamut: false,
+                auto_tone_map: false,
+            },
+            ..Default::default()
+        },
+        1,
+        1,
+        None,
+    );
+    let bytes = encode(&p, false);
+    let loaded = decode(&bytes).unwrap();
+    assert_eq!(loaded.schema_version, 16);
+    assert!(!loaded.migrated());
+    let loaded_seq = loaded.project.sequence(seq).unwrap();
+    assert_eq!(loaded_seq.settings.color.working, filmcraft_color::WorkingSpace::AcesCg);
+    assert!(loaded_seq.settings.color.is_aces());
+    assert_eq!(loaded_seq.settings.color.working_gamut(), filmcraft_color::Gamut::Ap1);
+}

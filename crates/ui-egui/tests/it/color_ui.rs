@@ -364,3 +364,21 @@ fn lumetri_rows_keep_their_width_when_the_clip_name_is_long() {
     let long = d.element("lumetri.param.hdr_white").expect("hdr_white row");
     assert_eq!(short, long, "a long clip name must not move or widen the control rows");
 }
+
+#[test]
+fn sequence_color_dialog_aces_cg_gating() {
+    let mut d = Driver::demo();
+    let r = d.ok("ui.menu.invoke", json!({"id": "sequence.colorSettings"}));
+    assert_eq!(r["dialog"], "sequenceColor");
+    d.frames(3);
+    d.click("colorDialog.working.aces-cg");
+    d.frames(2);
+    d.click("colorDialog.ok");
+    d.frames(2);
+    let q = d.app().session.active_sequence().unwrap();
+    assert_eq!(q.settings.color.working, filmcraft_color::WorkingSpace::AcesCg);
+    assert_eq!(q.settings.color.wide_gamut, false);
+    assert_eq!(q.settings.color.auto_tone_map, false);
+    assert!(q.settings.color.is_aces());
+    assert_eq!(q.settings.working_space, "ACEScg (AP1 Linear)");
+}

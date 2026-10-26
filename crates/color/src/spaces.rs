@@ -348,16 +348,19 @@ pub enum WorkingSpace {
     Rec709,
     Rec2100Pq,
     Rec2100Hlg,
+    #[serde(rename = "AcesCg", alias = "acesCg", alias = "aces-cg")]
+    AcesCg,
 }
 
 impl WorkingSpace {
-    pub const ALL: [WorkingSpace; 3] = [WorkingSpace::Rec709, WorkingSpace::Rec2100Pq, WorkingSpace::Rec2100Hlg];
+    pub const ALL: [WorkingSpace; 4] = [WorkingSpace::Rec709, WorkingSpace::Rec2100Pq, WorkingSpace::Rec2100Hlg, WorkingSpace::AcesCg];
 
     pub fn id(self) -> &'static str {
         match self {
             WorkingSpace::Rec709 => "rec709",
             WorkingSpace::Rec2100Pq => "rec2100-pq",
             WorkingSpace::Rec2100Hlg => "rec2100-hlg",
+            WorkingSpace::AcesCg => "aces-cg",
         }
     }
     pub fn label(self) -> &'static str {
@@ -365,6 +368,7 @@ impl WorkingSpace {
             WorkingSpace::Rec709 => "Rec. 709",
             WorkingSpace::Rec2100Pq => "Rec. 2100 PQ",
             WorkingSpace::Rec2100Hlg => "Rec. 2100 HLG",
+            WorkingSpace::AcesCg => "ACEScg (AP1 Linear)",
         }
     }
     pub fn parse(s: &str) -> Option<WorkingSpace> {
@@ -373,12 +377,15 @@ impl WorkingSpace {
         WorkingSpace::ALL.into_iter().find(|w| norm(w.id()) == n || norm(w.label()) == n)
     }
     pub fn is_hdr(self) -> bool {
-        self != WorkingSpace::Rec709
+        self == WorkingSpace::Rec2100Pq || self == WorkingSpace::Rec2100Hlg
+    }
+    pub fn is_aces(self) -> bool {
+        self == WorkingSpace::AcesCg
     }
     /// The colour space exports of this sequence are encoded in.
     pub fn output_space(self) -> ColorSpace {
         match self {
-            WorkingSpace::Rec709 => ColorSpace::Rec709,
+            WorkingSpace::Rec709 | WorkingSpace::AcesCg => ColorSpace::Rec709,
             WorkingSpace::Rec2100Pq => ColorSpace::Rec2100Pq,
             WorkingSpace::Rec2100Hlg => ColorSpace::Rec2100Hlg,
         }
@@ -400,11 +407,19 @@ impl ColorPipeline {
 
     /// Linear primaries of the compositing space.
     pub fn working_gamut(&self) -> Gamut {
-        if self.working.is_hdr() || self.wide_gamut { Gamut::Bt2020 } else { Gamut::Bt709 }
+        match self.working {
+            WorkingSpace::AcesCg => Gamut::Ap1,
+            WorkingSpace::Rec2100Pq | WorkingSpace::Rec2100Hlg => Gamut::Bt2020,
+            WorkingSpace::Rec709 => if self.wide_gamut { Gamut::Bt2020 } else { Gamut::Bt709 },
+        }
     }
     /// The classic pipeline: linear BT.709, display-referred SDR.
     pub fn is_plain(&self) -> bool {
-        !self.working.is_hdr() && !self.wide_gamut
+        self.working == WorkingSpace::Rec709 && !self.wide_gamut
+    }
+    /// Whether this pipeline composites in ACEScg (AP1 linear).
+    pub fn is_aces(&self) -> bool {
+        self.working == WorkingSpace::AcesCg
     }
 }
 
@@ -500,6 +515,15 @@ mod tests {
         }
         assert_eq!(WorkingSpace::parse("Rec. 2100 PQ"), Some(WorkingSpace::Rec2100Pq));
         assert_eq!(WorkingSpace::parse("rec709"), Some(WorkingSpace::Rec709));
+        assert_eq!(WorkingSpace::parse("aces-cg"), Some(WorkingSpace::AcesCg));
+        assert_eq!(WorkingSpace::parse("ACEScg (AP1 Linear)"), Some(WorkingSpace::AcesCg));
+        assert_eq!(WorkingSpace::parse("acescg"), Some(WorkingSpace::AcesCg));
+        assert!(!WorkingSpace::AcesCg.is_hdr());
+        assert!(WorkingSpace::AcesCg.is_aces());
+        let pipe = ColorPipeline { working: WorkingSpace::AcesCg, wide_gamut: false, auto_tone_map: false };
+        assert_eq!(pipe.working_gamut(), Gamut::Ap1);
+        assert!(!pipe.is_plain());
+        assert!(pipe.is_aces());
         let hdr = ColorInfo { transfer: Transfer::Hlg, primaries: Primaries::Bt2020, ..ColorInfo::REC709 };
         assert_eq!(ColorSpace::from_info(&hdr), ColorSpace::Rec2100Hlg);
         assert_eq!(ColorSpace::from_info(&ColorInfo::REC709), ColorSpace::Rec709);

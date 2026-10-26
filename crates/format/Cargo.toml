@@ -22,4 +22,5 @@ chrono = { workspace = true }
 tempfile = "3.27"
 
 [dev-dependencies]
+filmcraft-color = { workspace = true }
 filmcraft-time = { workspace = true }
