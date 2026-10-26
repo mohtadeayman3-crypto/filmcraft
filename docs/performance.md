@@ -135,9 +135,10 @@ Every Auto row rendered all its frames on the GPU, without fallbacks.
 
 On a plain clip the export is decoding- and encoding-bound and both take the same time; with
 layers and effects the GPU is 2.4× (1080p) to 3.2× (4K) faster, with a third to a quarter of the
-CPU. GPU rendering is nevertheless **Off by default** (opt-in per export) until it has been
-measured on Windows and macOS: the GPU result matches the CPU within the compositor's parity
-tolerance, not bit for bit, and Off keeps exports byte-reproducible on every machine. (The 4K row used the same scene with the sequence, clip and positions scaled to 4K.)
+CPU. In upstream FilmCraft, GPU rendering is Off by default until measured on macOS; in the
+**FilmCraft-X fork**, GPU rendering defaults to **Auto** on Windows after empirical measurement on
+an NVIDIA RTX 5060 Ti demonstrated 1.70x to 7.46x speedups (5.19x on full 10-second 4K timeline exports
+to MP4) with 100% GPU frame completion and 0 fallbacks. Off remains selectable in the UI and CLI. (The 4K row used the same scene with the sequence, clip and positions scaled to 4K.)
 
 ### Memory after an export
 

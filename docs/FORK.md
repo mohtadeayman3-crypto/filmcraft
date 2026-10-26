@@ -165,3 +165,17 @@ To preserve project interchange between FilmCraft-X and upstream FilmCraft 0.12 
   - Project created as ACEScg, subsequently reverted to Rec.709, gracefully downgrades to schema 15 on next save.
 - **Risk Assessment:** Low risk. No data loss is possible because `WorkingSpace::Rec709` is fully representable in schema 15.
 
+---
+
+## 7. Export GPU Rendering Default (Task F1)
+
+- **Default Configuration:** In FilmCraft-X, `ExportSettings.gpu_rendering` defaults to `GpuRendering::Auto` (upstream defaults to `Off`).
+- **Selectable Controls:** `Off` remains fully selectable in the UI (Export mode checkbox `export.gpuRendering`) and CLI (`gpuRendering: "off"`).
+- **Empirical Validation:** 10-second 4K UHD timeline (`C1102.MP4`, two clips, cross-dissolve, text graphic, speed change 1.5x, 6-section Lumetri grade):
+  - CPU Export (`gpu_rendering = Off`): 79.86 s (3.1 FPS), size 24.26 MB
+  - GPU Export (`gpu_rendering = Auto`): 15.39 s (16.2 FPS), size 24.27 MB
+  - Speedup: **5.19× faster**
+  - GPU Frame Reliability: **250 / 250 frames (100%)** rendered on GPU with 0 fallbacks
+  - Repeatable example: `cargo run --release -p filmcraft-gpu --example export_bench_files`
+  - Artifacts generated: `D:\FilmCraftX-ab\cpu_export.mp4` and `D:\FilmCraftX-ab\gpu_export.mp4`
+

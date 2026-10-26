@@ -51,12 +51,10 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
 - [x] Item 1 Safety & Gating: ACEScg hidden behind FILMCRAFT_EXPERIMENTAL_ACES=1, labeled "(experimental, incomplete)", engine notice returned
 - [x] Item 2 GPU Golden Outputs: legacy-mode GPU golden checks passing (`legacy_gpu_golden_outputs_remain_unchanged`)
 - [x] Item 3 docs/FORK.md: Documented schema v16 incompatibility and dynamic schema downgrade proposal
+- [x] Item 4 Task F1: Default export `gpu_rendering` to `Auto` in fork, verified with repeatable 10s MP4 export comparison
 
 ## Next
 
-- Item 4: Task F1 (default export `gpu_rendering` to `Auto` in fork with 10s MP4 example).
-- Item 5: C2.5 utility transforms, scopes, and eyedropper.
-- Item 4: Task F1 (default export `gpu_rendering` to `Auto` in fork with 10s MP4 example).
 - Item 5: C2.5 utility transforms, scopes, and eyedropper.
 
 ## C2.1 Pure-Rust ACES Core Completion Summary (2026-10-26)
@@ -340,3 +338,21 @@ Tested using `cargo run --release -p filmcraft-gpu --example seq_bench` on genui
   - Documented schema v16 bump (`SCHEMA_VERSION = 16` in `crates/format`) and noted that original FilmCraft 0.12 rejects schema $> 15$.
   - Formulated dynamic downgrade proposal (no code): project encoder checks `seq.settings.color.working.is_aces()`; writes schema 15 if no sequence uses ACEScg, and schema 16 only when ACEScg is present.
   - Analyzed costs: negligible runtime overhead ($< 1\,\mu\text{s}$), low code complexity, moderate test matrix expansion, zero risk of data loss.
+
+### Item 4: Task F1 Export Default & 10-Second MP4 Deliverables
+- **Code Changes**:
+  - `crates/export/src/settings.rs`: Set `#[default]` on `GpuRendering::Auto`.
+  - `crates/export/src/lib.rs`: Default `ExportSettings.gpu_rendering` to `GpuRendering::Auto`.
+  - `crates/export/src/settings_tests.rs`: Added `gpu_rendering_is_auto_by_default` test verifying `Auto` default and explicit `Off` override roundtrip.
+  - `docs/performance.md` & `docs/FORK.md`: Documented default change and benchmark metrics.
+- **Repeatable Comparison Example**:
+  - Implemented `crates/gpu/examples/export_bench_files.rs`.
+  - Renders the 10-second 4K UHD timeline (Sony S-Log3 `C1102.MP4`, two clips, cross-dissolve, text graphic, speed change 1.5x, 6-section Lumetri grade):
+    - **CPU Export (`gpu_rendering = Off`)**: 79.86 s (3.1 FPS), size 24.26 MB
+    - **GPU Export (`gpu_rendering = Auto`)**: 15.39 s (16.2 FPS), size 24.27 MB
+    - **Speedup**: **5.19× faster**
+    - **GPU Frame Share**: **250 / 250 frames (100.0%)** rendered on GPU with 0 fallbacks
+  - Generated deliverables saved to `D:\FilmCraftX-ab`:
+    - `cpu_export.mp4` (24.26 MB)
+    - `gpu_export.mp4` (24.27 MB)
+  - Automatically spawned Windows Explorer viewing `D:\FilmCraftX-ab`.

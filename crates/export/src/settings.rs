@@ -86,8 +86,8 @@ pub enum HardwareEncoding {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum GpuRendering {
-    Auto,
     #[default]
+    Auto,
     Off,
 }
 
