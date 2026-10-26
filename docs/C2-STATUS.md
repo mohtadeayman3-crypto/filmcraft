@@ -49,10 +49,10 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
 - [x] C2.3: Baseline golden hashes & project schema bump (v15 -> v16, commit `744b6bd5`)
 - [x] C2.4: WorkingSpace::AcesCg, GradeSpace::AcesCct, schema v16 roundtrip, and UI gating
 - [x] Item 1 Safety & Gating: ACEScg hidden behind FILMCRAFT_EXPERIMENTAL_ACES=1, labeled "(experimental, incomplete)", engine notice returned
+- [x] Item 2 GPU Golden Outputs: legacy-mode GPU golden checks passing (`legacy_gpu_golden_outputs_remain_unchanged`)
 
 ## Next
 
-- Item 2: GPU golden output checks in legacy mode (`legacy_gpu_golden_outputs_remain_unchanged`).
 - Item 3: `docs/FORK.md` update regarding schema v16 and downgrade cost analysis.
 - Item 4: Task F1 (default export `gpu_rendering` to `Auto` in fork with 10s MP4 example).
 - Item 5: C2.5 utility transforms, scopes, and eyedropper.
@@ -315,3 +315,20 @@ Tested using `cargo run --release -p filmcraft-gpu --example seq_bench` on genui
   - `crates/engine/src/color.rs` & `commands.rs`:
     - `sequence.colorSettings` and `sequence.settings` return an explicit `"notice"` field in the response object when `wideGamut` or `autoToneMap` are requested in ACES mode: `"wideGamut and autoToneMap are not applicable in ACEScg mode and remain disabled"`.
     - Both sequence settings and color settings UI dialogs surface this notice directly in `app.ui.status` on apply.
+
+### Item 2: Legacy-Mode GPU Golden Outputs
+- **Test Implementation**: `legacy_gpu_golden_outputs_remain_unchanged` in `crates/gpu/src/tests.rs`.
+- **Methodology**: Renders the exact 4 synthetic reference cases through the GPU compositor (`GpuCompositor`) and compares against CPU reference outputs (`execute_cpu(&plan).over_black_rgba8()`), asserting maximum code difference $\le$ tolerance and recording deterministic 64-bit FNV-1a checksums:
+  1. **Sony S-Log3 256-step ramp (10-bit limited YUV444 $\to$ Rec. 709)**:
+     - GPU Golden Hash: `0x42b29378c52a773c`
+     - Parity vs CPU: max difference $= 1$ code (tolerance $\le 2$).
+  2. **Rec. 2100 PQ 256-step ramp (0..4000 nits, 10-bit limited YUV444 $\to$ Rec. 709)**:
+     - GPU Golden Hash: `0xa17f1da995d99bcf`
+     - Parity vs CPU: max difference $= 1$ code (tolerance $\le 2$).
+  3. **75% Rec. 709 standard color bars (7 bars: White, Yellow, Cyan, Green, Magenta, Red, Blue)**:
+     - GPU Golden Hash: `0x5271bd11d6a1d073`
+     - Parity vs CPU: max difference $= 0$ codes (**exact bit-for-bit identity** with CPU golden hash).
+  4. **HDR PQ $\to$ SDR Rec. 709 display tone-mapped ramp (1000 nits peak, 10-bit limited YUV444)**:
+     - GPU Golden Hash: `0x1bc3b47aa28c8568`
+     - Parity vs CPU: max difference $= 1$ code (tolerance $\le 2$).
+- Verified: All 4 GPU golden outputs pass deterministically.

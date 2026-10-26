@@ -708,3 +708,165 @@ fn chroma_siting_empirical_sign_and_magnitude() {
     // Conclusion: Candidate 1 (+0.25 chroma texels) is the exact mathematical and empirical
     // correction for left-sited 4:2:0 chroma alignment.
 }
+
+/// Legacy-mode golden output verification for the GPU pipeline (C2.4 Item 2):
+/// Renders synthetic test frames across the GPU compositor:
+/// 1. S-Log3 256-step ramp (Y'CbCr 10-bit limited -> Rec. 709)
+/// 2. Rec. 2100 PQ 256-step ramp (Y'CbCr 10-bit limited, 0..4000 nits -> Rec. 709)
+/// 3. 75% Rec. 709 standard color bars (7 bars, White, Yellow, Cyan, Green, Magenta, Red, Blue)
+/// 4. HDR PQ 256-step ramp with 1000 cd/m² display tone mapping
+///
+/// Verifies:
+/// - Maximum difference against CPU reference is within documented tolerance (<= 2 codes for ramps, <= 1 for bars)
+/// - Deterministic 64-bit FNV-1a checksums of GPU output match recorded golden hashes
+#[test]
+fn legacy_gpu_golden_outputs_remain_unchanged() {
+    use filmcraft_color::{ColorInfo, ColorPipeline, ColorSpace, InputTransform, Matrix, Primaries, Range, Transfer};
+
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+
+    // Deterministic 64-bit FNV-1a checksum
+    fn fnv1a_64(data: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for &b in data {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+
+    fn extract_rgb(gpu_rgba: &[u8], w: usize, h: usize) -> Vec<u8> {
+        let mut rgb = Vec::with_capacity(w * h * 3);
+        for row in 0..h {
+            for col in 0..w {
+                let idx = (row * w + col) * 4;
+                rgb.push(gpu_rgba[idx]);
+                rgb.push(gpu_rgba[idx + 1]);
+                rgb.push(gpu_rgba[idx + 2]);
+            }
+        }
+        rgb
+    }
+
+    // 1. S-Log3 -> Rec. 709 256-step ramp (10-bit limited YUV444)
+    {
+        let (w, h) = (256usize, 1usize);
+        let y: Vec<u16> = (0..w).map(|x| (64 + x * 876 / 255) as u16).collect();
+        let cb: Vec<u16> = vec![512; w];
+        let cr: Vec<u16> = vec![512; w];
+        let data = PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(cb), Arc::new(cr)], chroma: Chroma::C444, bits: 10, alpha: None };
+        let color = ColorInfo { matrix: Matrix::Bt709, transfer: Transfer::Bt709, primaries: Primaries::Bt709, range: Range::Limited };
+        let frame = Arc::new(VideoFrame { width: w as u32, height: h as u32, data, color, par: (1, 1), pts: Default::default() });
+        let t = Arc::new(InputTransform::new(ColorSpace::SLog3SGamut3Cine, Range::Limited, &ColorPipeline::REC709, None));
+        let layer = PlanLayer { input: Some(t), ..PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal) };
+        let plan = FramePlan::Layers { width: w, height: h, layers: vec![layer] };
+
+        let cpu = execute_cpu(&plan).over_black_rgba8();
+        c.composite(&plan);
+        let (_, _, gpu) = c.read_output().expect("gpu readback");
+
+        let max_err = cpu.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+        assert!(max_err <= 2, "S-Log3 ramp GPU differs from CPU by up to {max_err} codes (tolerance: 2)");
+
+        let gpu_rgb = extract_rgb(&gpu, w, h);
+        let hash = fnv1a_64(&gpu_rgb);
+        assert_eq!(hash, 0x42b29378c52a773c, "GPU S-Log3 ramp hash mismatch: got {hash:#018x}");
+    }
+
+    // 2. Rec. 2100 PQ -> Rec. 709 256-step ramp (0..4000 nits, 10-bit limited YUV444)
+    {
+        let (w, h) = (256usize, 1usize);
+        let y: Vec<u16> = (0..w).map(|x| (64 + x * 876 / 255) as u16).collect();
+        let cb: Vec<u16> = vec![512; w];
+        let cr: Vec<u16> = vec![512; w];
+        let data = PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(cb), Arc::new(cr)], chroma: Chroma::C444, bits: 10, alpha: None };
+        let color = ColorInfo { matrix: Matrix::Bt2020Ncl, transfer: Transfer::Pq, primaries: Primaries::Bt2020, range: Range::Limited };
+        let frame = Arc::new(VideoFrame { width: w as u32, height: h as u32, data, color, par: (1, 1), pts: Default::default() });
+        let t = Arc::new(InputTransform::new(ColorSpace::Rec2100Pq, Range::Limited, &ColorPipeline::REC709, Some(4000.0)));
+        let layer = PlanLayer { input: Some(t), ..PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal) };
+        let plan = FramePlan::Layers { width: w, height: h, layers: vec![layer] };
+
+        let cpu = execute_cpu(&plan).over_black_rgba8();
+        c.composite(&plan);
+        let (_, _, gpu) = c.read_output().expect("gpu readback");
+
+        let max_err = cpu.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+        assert!(max_err <= 2, "Rec.2100 PQ ramp GPU differs from CPU by up to {max_err} codes (tolerance: 2)");
+
+        let gpu_rgb = extract_rgb(&gpu, w, h);
+        let hash = fnv1a_64(&gpu_rgb);
+        assert_eq!(hash, 0xa17f1da995d99bcf, "GPU PQ ramp hash mismatch: got {hash:#018x}");
+    }
+
+    // 3. 75% Rec. 709 standard color bars: White, Yellow, Cyan, Green, Magenta, Red, Blue
+    {
+        let bars_709 = [
+            [0.75f32, 0.75, 0.75],
+            [0.75, 0.75, 0.0],
+            [0.0, 0.75, 0.75],
+            [0.0, 0.75, 0.0],
+            [0.75, 0.0, 0.75],
+            [0.75, 0.0, 0.0],
+            [0.0, 0.0, 0.75],
+        ];
+        let (w, h) = (bars_709.len(), 1usize);
+        let (kr, kb) = (0.2126f32, 0.0722f32);
+        let mut y = Vec::with_capacity(w);
+        let mut cb = Vec::with_capacity(w);
+        let mut cr = Vec::with_capacity(w);
+        for [r, g, b] in bars_709 {
+            let y_norm = kr * r + (1.0 - kr - kb) * g + kb * b;
+            let cb_norm = (b - y_norm) / (2.0 * (1.0 - kb));
+            let cr_norm = (r - y_norm) / (2.0 * (1.0 - kr));
+            y.push((64.0 + y_norm * 876.0).round() as u16);
+            cb.push((512.0 + cb_norm * 896.0).round() as u16);
+            cr.push((512.0 + cr_norm * 896.0).round() as u16);
+        }
+        let data = PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(cb), Arc::new(cr)], chroma: Chroma::C444, bits: 10, alpha: None };
+        let color = ColorInfo { matrix: Matrix::Bt709, transfer: Transfer::Bt709, primaries: Primaries::Bt709, range: Range::Limited };
+        let frame = Arc::new(VideoFrame { width: w as u32, height: h as u32, data, color, par: (1, 1), pts: Default::default() });
+        let t = Arc::new(InputTransform::new(ColorSpace::Rec709, Range::Limited, &ColorPipeline::REC709, None));
+        let layer = PlanLayer { input: Some(t), ..PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal) };
+        let plan = FramePlan::Layers { width: w, height: h, layers: vec![layer] };
+
+        let cpu = execute_cpu(&plan).over_black_rgba8();
+        c.composite(&plan);
+        let (_, _, gpu) = c.read_output().expect("gpu readback");
+
+        let max_err = cpu.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+        assert!(max_err <= 1, "Rec.709 color bars GPU differs from CPU by up to {max_err} codes (tolerance: 1)");
+
+        let gpu_rgb = extract_rgb(&gpu, w, h);
+        let hash = fnv1a_64(&gpu_rgb);
+        assert_eq!(hash, 0x5271bd11d6a1d073, "GPU Rec.709 bars hash mismatch: got {hash:#018x}");
+    }
+
+    // 4. HDR PQ -> SDR Rec. 709 display tone-mapped ramp (1000 nits peak, 10-bit limited YUV444)
+    {
+        let (w, h) = (256usize, 1usize);
+        let y: Vec<u16> = (0..w).map(|x| (64 + x * 876 / 255) as u16).collect();
+        let cb: Vec<u16> = vec![512; w];
+        let cr: Vec<u16> = vec![512; w];
+        let data = PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(cb), Arc::new(cr)], chroma: Chroma::C444, bits: 10, alpha: None };
+        let color = ColorInfo { matrix: Matrix::Bt2020Ncl, transfer: Transfer::Pq, primaries: Primaries::Bt2020, range: Range::Limited };
+        let frame = Arc::new(VideoFrame { width: w as u32, height: h as u32, data, color, par: (1, 1), pts: Default::default() });
+        let t = Arc::new(InputTransform::new(ColorSpace::Rec2100Pq, Range::Limited, &ColorPipeline::REC709, Some(1000.0)));
+        let layer = PlanLayer { input: Some(t), ..PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal) };
+        let plan = FramePlan::Layers { width: w, height: h, layers: vec![layer] };
+
+        let cpu = execute_cpu(&plan).over_black_rgba8();
+        c.composite(&plan);
+        let (_, _, gpu) = c.read_output().expect("gpu readback");
+
+        let max_err = cpu.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+        assert!(max_err <= 2, "HDR PQ display tone-mapped GPU differs from CPU by up to {max_err} codes (tolerance: 2)");
+
+        let gpu_rgb = extract_rgb(&gpu, w, h);
+        let hash = fnv1a_64(&gpu_rgb);
+        assert_eq!(hash, 0x1bc3b47aa28c8568, "GPU HDR PQ display tone-mapped hash mismatch: got {hash:#018x}");
+    }
+}
