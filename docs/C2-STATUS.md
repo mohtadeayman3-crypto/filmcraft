@@ -37,11 +37,15 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
 - [x] §6–8 written (tests, schema, UI/commands) — part 3
 - [x] §9–11 written (risks, staged plan, open questions) — final "C2.0: design draft"
 - [x] §12 written (Addendum: `composite.wgsl` inspection for C2.2)
+- [x] C2.1 pure-Rust ACES core implemented and pushed to `origin/main`
+- [x] C2.2 GPU camera log decode implemented and verified with A/B real-footage metrics
+- [x] Isolated OCIO oracle setup in `D:\FilmCraftX-tools\` (Python 3.12, OpenColorIO 2.6.0, NumPy 2.5.4)
 
 ## Next
 
-Awaiting user response regarding Python environment setup for OCIO test oracle vectors in `D:\FilmCraftX-tools\`.
-Ready for C2.3 (GPU display transform / resolve stage).
+- Item 3: Chroma siting empirical test with synthetic 4:2:0 frame
+- Item 4: Export default investigation and C1102.MP4 benchmark
+- Item 5: ACEScg pipeline wiring design summary (15 lines)
 
 ## C2.1 Pure-Rust ACES Core Completion Summary (2026-10-26)
 
@@ -114,4 +118,28 @@ Ready for C2.3 (GPU display transform / resolve stage).
 - **4:2:0 Chroma Upsampling Quantification**:
   - *Mechanism*: CPU `filmcraft-frame` upsamples 4:2:0 chroma planes using nearest-neighbor box sampling (`cy = y >> sy; cx = x >> sx;`), repeating each $2\times 2$ chroma sample across four luma pixels. The GPU compositor in `composite.wgsl` samples chroma planes using hardware bilinear interpolation via `load4(tex1, cp)`.
   - *Impact*: In interior pixel regions and smooth gradients ($> 98\%$ of the image), CPU and GPU agree within $\le 2$ codes (mean difference $\approx 0.28$ codes). The outlier differences ($> 20$ codes, representing $< 0.016\%$ of pixels) occur exclusively along sharp, high-contrast chroma edges where nearest-neighbor creates 2-pixel stair-stepping blocks while GPU bilinear filtering produces smooth sub-pixel anti-aliasing. GPU bilinear filtering is visually superior and prevents chroma blockiness.
+
+## Isolated OCIO Test Oracle Setup (2026-10-26)
+
+- **Location**: `D:\FilmCraftX-tools\` (strictly external to repo, no admin, no system PATH/registry alterations).
+- **Tooling**:
+  - `uv` standalone binary version: `0.13.5` (`uv-x86_64-pc-windows-msvc.zip`).
+  - Verified official release SHA256: `a38b8d1902b7cfbc76b423ba1bb456f623f42064cdc72628b6075b89afd1019a`.
+  - Python installation: Managed CPython `3.12.15` in `D:\FilmCraftX-tools\python\`.
+  - Cache directory: `D:\FilmCraftX-tools\cache\`.
+  - Virtual environment: `D:\FilmCraftX-tools\venv\`.
+- **Packages Installed from PyPI**:
+  - `opencolorio==2.6.0`
+  - `numpy==2.5.4`
+- **ACES 2.0 Built-in Capabilities**:
+  - Verified `OpenColorIO 2.6.0` contains built-in ACES 2.0 output transforms:
+    - SDR: `ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - SDR-100nit-REC709_2.0`, `SDR-100nit-P3-D65_2.0`
+    - HDR: `HDR-500nit-REC2020_2.0`, `HDR-1000nit-REC2020_2.0`, `HDR-2000nit-REC2020_2.0`, `HDR-4000nit-REC2020_2.0`, `HDR-108nit-P3-D65_2.0`
+  - Verified built-in ACES 2.0 configs:
+    - `cg-config-v4.0.0_aces-v2.0_ocio-v2.5`
+    - `studio-config-v4.0.0_aces-v2.0_ocio-v2.5`
+    - `cg-config-v5.0.0_aces-v2.1_ocio-v2.6`
+    - `studio-config-v5.0.0_aces-v2.1_ocio-v2.6`
+  - Also verified built-in camera IDTs (`SONY_SLOG3-SGAMUT3.CINE_to_ACES2065-1`, `ARRI_LOGC4_to_ACES2065-1`, `CANON_CLOG2-CGAMUT_to_ACES2065-1`, etc.).
+
 
