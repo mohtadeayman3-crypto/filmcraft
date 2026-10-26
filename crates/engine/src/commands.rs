@@ -2285,7 +2285,20 @@ fn build() -> Vec<CommandSpec> {
                     let new_size = (q.settings.width, q.settings.height);
                     Ok(if scale_motion { edit::frame_size::scale_motion(q, old_size, new_size) } else { 0 })
                 })?;
-                Ok(json!({"scaledClips": scaled}))
+                let q_after = s.project.sequence(id);
+                let is_aces = q_after.as_ref().is_some_and(|seq| seq.settings.color.is_aces());
+                let requested_wide = bool_p(&p, "wideGamut") == Some(true);
+                let requested_tone = bool_p(&p, "autoToneMap") == Some(true);
+                let notice = if is_aces && (requested_wide || requested_tone) {
+                    Some("wideGamut and autoToneMap are not applicable in ACEScg mode and remain disabled")
+                } else {
+                    None
+                };
+                let mut res = json!({"scaledClips": scaled});
+                if let Some(n) = notice {
+                    res["notice"] = json!(n);
+                }
+                Ok(res)
             }
         ),
         cmd!("sequence.renderEffectsInToOut", "Render Effects In to Out", ["Sequence"], Some("Enter"), r#"{"wait":bool=false}"#, has_seq, |s, p| {

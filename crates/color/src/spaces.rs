@@ -368,12 +368,15 @@ impl WorkingSpace {
             WorkingSpace::Rec709 => "Rec. 709",
             WorkingSpace::Rec2100Pq => "Rec. 2100 PQ",
             WorkingSpace::Rec2100Hlg => "Rec. 2100 HLG",
-            WorkingSpace::AcesCg => "ACEScg (AP1 Linear)",
+            WorkingSpace::AcesCg => "ACEScg (AP1 Linear) (experimental, incomplete)",
         }
     }
     pub fn parse(s: &str) -> Option<WorkingSpace> {
         let norm = |x: &str| x.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
         let n = norm(s);
+        if n == "acescg" || n == "acescgap1linear" || n == "acescgap1linearexperimentalincomplete" {
+            return Some(WorkingSpace::AcesCg);
+        }
         WorkingSpace::ALL.into_iter().find(|w| norm(w.id()) == n || norm(w.label()) == n)
     }
     pub fn is_hdr(self) -> bool {
@@ -390,6 +393,20 @@ impl WorkingSpace {
             WorkingSpace::Rec2100Hlg => ColorSpace::Rec2100Hlg,
         }
     }
+}
+
+static EXPERIMENTAL_ACES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether experimental ACES working space features are enabled via `FILMCRAFT_EXPERIMENTAL_ACES=1`
+/// or programmatic test override.
+pub fn experimental_aces() -> bool {
+    EXPERIMENTAL_ACES.load(std::sync::atomic::Ordering::Relaxed)
+        || std::env::var("FILMCRAFT_EXPERIMENTAL_ACES").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+}
+
+/// Override experimental ACES state for tests in safe Rust without mutating environment variables.
+pub fn set_experimental_aces_for_test(enabled: bool) {
+    EXPERIMENTAL_ACES.store(enabled, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Everything the renderer needs to know about a sequence's colour pipeline.

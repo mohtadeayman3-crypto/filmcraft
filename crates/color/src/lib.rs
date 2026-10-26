@@ -21,7 +21,7 @@ pub use aces::{ACES_WHITE, AP0_PRIMARIES, AP1_PRIMARIES, acescg_decode, acescg_e
 pub use grade::GradeSpace;
 pub use log::LogCurve;
 pub use lut::{Lut, Lut1d, Lut3d, LutFormat};
-pub use spaces::{ColorPipeline, ColorSpace, Curve, Gamut, WorkingSpace};
+pub use spaces::{ColorPipeline, ColorSpace, Curve, Gamut, WorkingSpace, experimental_aces, set_experimental_aces_for_test};
 pub use transform::{DecodeTable, GpuCurve, GpuInputParams, InputTransform, OutputTransform, REFERENCE_WHITE_NITS, ToneMap};
 
 /// YUV ↔ RGB matrix coefficients.

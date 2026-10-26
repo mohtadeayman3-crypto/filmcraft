@@ -48,10 +48,14 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
 - [x] Full-sequence 10-second export benchmark completed (250 frames, clips + transition + title + speed change + Lumetri): 1.70× raw speedup, 7.46× graded speedup, 100% GPU rendered
 - [x] C2.3: Baseline golden hashes & project schema bump (v15 -> v16, commit `744b6bd5`)
 - [x] C2.4: WorkingSpace::AcesCg, GradeSpace::AcesCct, schema v16 roundtrip, and UI gating
+- [x] Item 1 Safety & Gating: ACEScg hidden behind FILMCRAFT_EXPERIMENTAL_ACES=1, labeled "(experimental, incomplete)", engine notice returned
 
 ## Next
 
-Stage A tasks C2.3 and C2.4 completed. Awaiting user review before proceeding to Task F1 (default export `gpu_rendering` to `Auto` in fork).
+- Item 2: GPU golden output checks in legacy mode (`legacy_gpu_golden_outputs_remain_unchanged`).
+- Item 3: `docs/FORK.md` update regarding schema v16 and downgrade cost analysis.
+- Item 4: Task F1 (default export `gpu_rendering` to `Auto` in fork with 10s MP4 example).
+- Item 5: C2.5 utility transforms, scopes, and eyedropper.
 
 ## C2.1 Pure-Rust ACES Core Completion Summary (2026-10-26)
 
@@ -295,3 +299,19 @@ Tested using `cargo run --release -p filmcraft-gpu --example seq_bench` on genui
     - `sequence.colorSettings` and `sequence.settings` commands force `wide_gamut = false` and `auto_tone_map = false` whenever `WorkingSpace::AcesCg` is selected.
   - `crates/engine/src/color_tests.rs`: Added `aces_cg_working_space_and_gating_through_commands` asserting command gating.
   - `crates/ui-egui/tests/it/color_ui.rs`: Added `sequence_color_dialog_aces_cg_gating` asserting UI dialog flow.
+
+### Item 1: Safety & Experimental Gating
+- **What happens today if ACEScg is selected (prior to C2.5/C2.8)**:
+  1. Media and titles decode to Rec.709 linear or raw camera log without IDTs, compositing directly into AP1 coordinates, producing severe color shifts and incorrect brightness.
+  2. Lumetri grades interpret the signal as ACEScct, but WGSL GPU shaders lack mode 3 handling (falling back to SDR sRGB curves) while CPU grades lack ACES tone-scale / exposure offsets.
+  3. Compositor and display output have no ACES SDR "FilmCraft View" or ODT stage, causing scene-linear AP1 values to hard-clip at display 0..1 without gamut mapping or tone scale.
+- **Safety Measures Implemented**:
+  - `crates/color/src/spaces.rs`:
+    - Gated ACEScg selection behind `FILMCRAFT_EXPERIMENTAL_ACES=1` environment variable (and safe `filmcraft_color::set_experimental_aces_for_test(bool)` for testing without mutating process environment).
+    - Updated display label to `"ACEScg (AP1 Linear) (experimental, incomplete)"`.
+    - `color.spaces` query filters out ACES working spaces unless experimental flag is active.
+  - `crates/ui-egui/src/panels/sequence_settings.rs` & `color_dialogs.rs`:
+    - ACEScg option is completely omitted from the dropdown/radio lists unless `FILMCRAFT_EXPERIMENTAL_ACES=1` is set.
+  - `crates/engine/src/color.rs` & `commands.rs`:
+    - `sequence.colorSettings` and `sequence.settings` return an explicit `"notice"` field in the response object when `wideGamut` or `autoToneMap` are requested in ACES mode: `"wideGamut and autoToneMap are not applicable in ACEScg mode and remain disabled"`.
+    - Both sequence settings and color settings UI dialogs surface this notice directly in `app.ui.status` on apply.

@@ -438,6 +438,9 @@ fn color(ui: &mut egui::Ui, d: &mut SequenceSettingsDraft, elems: &mut Elems) {
         let shown = WorkingSpace::parse(&d.working_space).map_or(d.working_space.clone(), |w| t(w.label()).to_string());
         let resp = egui::ComboBox::from_id_salt("seq-settings-working-space").selected_text(&shown).width(220.0).show_ui(ui, |ui| {
             for w in WorkingSpace::ALL {
+                if !filmcraft_color::experimental_aces() && w.is_aces() {
+                    continue;
+                }
                 let disabled_hdr = is_aces && w.is_hdr();
                 let o = if disabled_hdr {
                     ui.add_enabled(false, egui::Button::new(t(w.label())).wrap_mode(egui::TextWrapMode::Extend))
@@ -572,11 +575,19 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     if apply {
         let p = changes(&d, &cur, &cur_name);
         // nothing changed: OK closes the dialog and adds no undo step
-        if !p.is_empty()
-            && let Err(e) = app.session.execute("sequence.settings", Value::Object(p))
-        {
-            app.ui.status = e.to_string();
-            keep = true;
+        if !p.is_empty() {
+            match app.session.execute("sequence.settings", Value::Object(p)) {
+                Ok(v) => {
+                    if let Some(n) = v.get("notice").and_then(Value::as_str) {
+                        app.ui.status = n.to_string();
+                    }
+                    keep = false;
+                }
+                Err(e) => {
+                    app.ui.status = e.to_string();
+                    keep = true;
+                }
+            }
         } else {
             keep = false;
         }

@@ -111,6 +111,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     ui.label(egui::RichText::new(tl!("Working Color Space")).strong());
                     let is_aces = working_space == "aces-cg";
                     for w in WorkingSpace::ALL {
+                        if !filmcraft_color::experimental_aces() && w.is_aces() {
+                            continue;
+                        }
                         let disabled_hdr = is_aces && w.is_hdr();
                         if disabled_hdr {
                             let r = ui.add_enabled(false, egui::RadioButton::new(false, w.label()))
@@ -147,9 +150,14 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         }
     }
     app.ui.color_dialog = if close || !open { None } else { Some(d) };
-    if let Some((cmd, p)) = apply
-        && let Err(e) = app.session.execute(cmd, p)
-    {
-        app.ui.status = e.to_string();
+    if let Some((cmd, p)) = apply {
+        match app.session.execute(cmd, p) {
+            Ok(v) => {
+                if let Some(n) = v.get("notice").and_then(Value::as_str) {
+                    app.ui.status = n.to_string();
+                }
+            }
+            Err(e) => app.ui.status = e.to_string(),
+        }
     }
 }

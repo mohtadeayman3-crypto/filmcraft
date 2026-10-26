@@ -257,22 +257,37 @@ fn hdr_lumetri_and_mastering_metadata_through_commands() {
 
 #[test]
 fn aces_cg_working_space_and_gating_through_commands() {
+    // 1. Without FILMCRAFT_EXPERIMENTAL_ACES=1, color.spaces does not list ACEScg
+    filmcraft_color::set_experimental_aces_for_test(false);
     let mut s = demo();
+    let sp = s.execute("color.spaces", json!({})).unwrap();
+    assert!(!sp["workingSpaces"].as_array().unwrap().iter().any(|w| w["id"] == "aces-cg"));
+
+    // 2. Setting FILMCRAFT_EXPERIMENTAL_ACES=1 surfaces it
+    filmcraft_color::set_experimental_aces_for_test(true);
+    let sp = s.execute("color.spaces", json!({})).unwrap();
+    assert!(sp["workingSpaces"].as_array().unwrap().iter().any(|w| w["id"] == "aces-cg"));
+
+    // 3. Command execution returns a visible notice when wideGamut or autoToneMap are passed
     let r = s.execute("sequence.colorSettings", json!({"workingSpace": "aces-cg", "wideGamut": true, "autoToneMap": true})).unwrap();
     assert_eq!(r["workingSpace"], "aces-cg");
-    assert_eq!(r["label"], "ACEScg (AP1 Linear)");
+    assert_eq!(r["label"], "ACEScg (AP1 Linear) (experimental, incomplete)");
     assert_eq!(r["wideGamut"], false, "wide gamut is disabled in ACEScg");
     assert_eq!(r["autoToneMap"], false, "auto tone map is disabled in ACEScg");
+    assert!(r["notice"].as_str().unwrap().contains("wideGamut and autoToneMap are not applicable in ACEScg mode"));
+
     let q = s.active_sequence().unwrap();
-    assert_eq!(q.settings.working_space, "ACEScg (AP1 Linear)");
+    assert_eq!(q.settings.working_space, "ACEScg (AP1 Linear) (experimental, incomplete)");
     assert!(q.settings.color.is_aces());
     assert_eq!(q.settings.color.working_gamut(), filmcraft_color::Gamut::Ap1);
     assert_eq!(q.settings.color.wide_gamut, false);
     assert_eq!(q.settings.color.auto_tone_map, false);
 
-    // Also via sequence.settings
-    s.execute("sequence.settings", json!({"workingSpace": "aces-cg", "wideGamut": true})).unwrap();
+    // 4. sequence.settings also returns the visible notice
+    let r2 = s.execute("sequence.settings", json!({"workingSpace": "aces-cg", "wideGamut": true})).unwrap();
+    assert!(r2["notice"].as_str().unwrap().contains("wideGamut and autoToneMap are not applicable in ACEScg mode"));
     let q2 = s.active_sequence().unwrap();
     assert_eq!(q2.settings.color.working, filmcraft_color::WorkingSpace::AcesCg);
     assert_eq!(q2.settings.color.wide_gamut, false);
+    filmcraft_color::set_experimental_aces_for_test(false);
 }

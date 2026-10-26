@@ -273,7 +273,16 @@ fn color_settings(s: &mut Session, p: &Value) -> Result<Value> {
         })?;
     }
     let c = s.project.sequence(id).map(|q| q.settings.color).unwrap_or_default();
-    Ok(json!({"workingSpace": c.working.id(), "label": c.working.label(), "wideGamut": c.wide_gamut, "autoToneMap": c.auto_tone_map}))
+    let notice = if c.working.is_aces() && (wide == Some(true) || tone == Some(true)) {
+        Some("wideGamut and autoToneMap are not applicable in ACEScg mode and remain disabled")
+    } else {
+        None
+    };
+    let mut res = json!({"workingSpace": c.working.id(), "label": c.working.label(), "wideGamut": c.wide_gamut, "autoToneMap": c.auto_tone_map});
+    if let Some(n) = notice {
+        res["notice"] = json!(n);
+    }
+    Ok(res)
 }
 
 fn has_footage(s: &Session) -> std::result::Result<(), String> {
@@ -361,7 +370,11 @@ fn spaces(_: &mut Session, _: &Value) -> Result<Value> {
         .iter()
         .map(|c| json!({"id": c.id(), "label": c.label(), "hdr": c.is_hdr(), "log": c.is_log(), "gamut": format!("{:?}", c.gamut())}))
         .collect();
-    let ws: Vec<Value> = WorkingSpace::ALL.iter().map(|w| json!({"id": w.id(), "label": w.label(), "hdr": w.is_hdr()})).collect();
+    let ws: Vec<Value> = WorkingSpace::ALL
+        .iter()
+        .filter(|w| filmcraft_color::experimental_aces() || !w.is_aces())
+        .map(|w| json!({"id": w.id(), "label": w.label(), "hdr": w.is_hdr()}))
+        .collect();
     Ok(json!({"colorSpaces": cs, "workingSpaces": ws}))
 }
 
