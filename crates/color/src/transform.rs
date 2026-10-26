@@ -184,6 +184,25 @@ pub fn gamut_compress(c: [f32; 3]) -> [f32; 3] {
     })
 }
 
+/// Interim gamut compression for ACES mode prior to verified Reference Gamut Compression (RGC).
+///
+/// Touches only negative AP1 tristimulus components resulting from out-of-AP1 camera or synthetic
+/// sources, clipping them to zero. In-gamut positive components are left untouched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum InterimGamutCompression {
+    #[default]
+    ClipToAP1,
+}
+
+impl InterimGamutCompression {
+    #[inline]
+    pub fn compress(&self, c: [f32; 3]) -> [f32; 3] {
+        match self {
+            Self::ClipToAP1 => [c[0].max(0.0), c[1].max(0.0), c[2].max(0.0)],
+        }
+    }
+}
+
 /// Source → working-space conversion for one colour space.
 #[derive(Clone, Debug)]
 pub struct InputTransform {
@@ -641,5 +660,95 @@ mod tests {
 
         let bar_white = plain_tf.convert([0.75, 0.75, 0.75]);
         assert!((bar_white[0] - 0.52252173).abs() < 1e-6, "Rec.709 75% white: {bar_white:?}");
+    }
+
+    #[test]
+    fn utility_transform_for_srgb_into_acescg() {
+        let aces_pipe = ColorPipeline { working: WorkingSpace::AcesCg, wide_gamut: false, auto_tone_map: false };
+        let ut = InputTransform::new(ColorSpace::Srgb, Range::Full, &aces_pipe, None);
+
+        // Utility transform properties: pure decode + matrix, NO tone map, NO gamut compression
+        assert!(ut.tone.is_none(), "utility transform must not tone-map");
+        assert!(!ut.compress, "utility transform must not compress gamut");
+        assert!(ut.desaturate.is_none(), "utility transform must not desaturate");
+        assert!(ut.hlg.is_none());
+        assert!(!ut.identity_matrix, "BT.709 -> AP1 is not identity");
+
+        // White roundtrips to AP1 (1.0, 1.0, 1.0)
+        let white_ap1 = ut.convert([1.0, 1.0, 1.0]);
+        assert!((white_ap1[0] - 1.0).abs() < 1e-5 && (white_ap1[1] - 1.0).abs() < 1e-5 && (white_ap1[2] - 1.0).abs() < 1e-5, "white in AP1: {white_ap1:?}");
+
+        // Display transform (FilmCraft view) maps white back to (1.0, 1.0, 1.0)
+        let out_tf = OutputTransform::display(&aces_pipe);
+        let disp_white = out_tf.apply(white_ap1);
+        assert!((disp_white[0] - 1.0).abs() < 1e-5 && (disp_white[1] - 1.0).abs() < 1e-5 && (disp_white[2] - 1.0).abs() < 1e-5, "disp white: {disp_white:?}");
+
+        // Red primary: sRGB [1, 0, 0] in AP1
+        let red_ap1 = ut.convert([1.0, 0.0, 0.0]);
+        // All components in AP1 should be non-negative because BT.709 is fully inside AP1
+        assert!(red_ap1[0] > 0.5 && red_ap1[1] > 0.0 && red_ap1[2] > 0.0, "red in AP1: {red_ap1:?}");
+        assert!(red_ap1.iter().all(|&v| v >= 0.0), "BT.709 red has no negative AP1 components");
+
+        // And back through FilmCraft display view preserves red exactly
+        let disp_red = out_tf.apply(red_ap1);
+        assert!((disp_red[0] - 1.0).abs() < 1e-4 && disp_red[1].abs() < 1e-4 && disp_red[2].abs() < 1e-4, "disp red: {disp_red:?}");
+    }
+
+    #[test]
+    fn interim_gamut_compression_clip_to_ap1_hue_shift() {
+        let igc = InterimGamutCompression::ClipToAP1;
+
+        // Synthetic out-of-AP1 highly saturated colors (e.g. monochromatic laser/neon primaries)
+        // Laser blue / neon cyan: negative R component in AP1
+        let neon_blue = [-0.08f32, 0.04f32, 1.25f32];
+        // Laser green: negative R and B components in AP1
+        let laser_green = [-0.12f32, 1.40f32, -0.05f32];
+        // High-intensity LED magenta: negative G component in AP1
+        let led_magenta = [1.35f32, -0.10f32, 0.95f32];
+
+        let cases = [
+            ("Neon Blue", neon_blue),
+            ("Laser Green", laser_green),
+            ("LED Magenta", led_magenta),
+        ];
+
+        // Hue angle helper in degrees: atan2(sqrt(3)*(G - B), 2*R - G - B)
+        let hue_deg = |c: [f32; 3]| -> f32 {
+            let (r, g, b) = (c[0], c[1], c[2]);
+            let x = 2.0 * r - g - b;
+            let y = 3.0f32.sqrt() * (g - b);
+            let mut deg = y.atan2(x).to_degrees();
+            if deg < 0.0 { deg += 360.0; }
+            deg
+        };
+
+        for (name, c_orig) in cases {
+            let c_clipped = igc.compress(c_orig);
+
+            // 1. Confirm that clipping only touches negative components
+            for i in 0..3 {
+                if c_orig[i] < 0.0 {
+                    assert_eq!(c_clipped[i], 0.0, "{name}: negative component must be clipped to 0");
+                } else {
+                    assert_eq!(c_clipped[i], c_orig[i], "{name}: positive component must be untouched");
+                }
+            }
+
+            // 2. Measure hue shift caused by clipping negative AP1 components
+            let h_orig = hue_deg(c_orig);
+            let h_clipped = hue_deg(c_clipped);
+            let delta_h = (h_clipped - h_orig).abs();
+            let shift = if delta_h > 180.0 { 360.0 - delta_h } else { delta_h };
+            println!("{name}: original AP1 {c_orig:?} (hue {h_orig:.2}°) -> clipped {c_clipped:?} (hue {h_clipped:.2}°), shift = {shift:.2}°");
+
+            // Hue shift must be finite and within expected bounds (typically 1..15 degrees for extreme lasers)
+            assert!(shift < 25.0, "{name}: hue shift too large: {shift}");
+
+            // 3. Confirm FilmCraft view (OutputTransform::display) maps clipped AP1 into valid Rec.709 display
+            let aces_pipe = ColorPipeline { working: WorkingSpace::AcesCg, wide_gamut: false, auto_tone_map: false };
+            let out_tf = OutputTransform::display(&aces_pipe);
+            let disp = out_tf.apply(c_clipped);
+            assert!(disp.iter().all(|&v| v >= 0.0 && v.is_finite()), "{name}: display mapping must produce non-negative values: {disp:?}");
+        }
     }
 }

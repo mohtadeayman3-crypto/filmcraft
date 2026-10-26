@@ -52,10 +52,11 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
 - [x] Item 2 GPU Golden Outputs: legacy-mode GPU golden checks passing (`legacy_gpu_golden_outputs_remain_unchanged`)
 - [x] Item 3 docs/FORK.md: Documented schema v16 incompatibility and dynamic schema downgrade proposal
 - [x] Item 4 Task F1: Default export `gpu_rendering` to `Auto` in fork, verified with repeatable 10s MP4 export comparison
+- [x] Item 5 C2.5: Utility transforms, GradeSpace::AcesCct WGSL/CPU parity, interim gamut compression, and scopes/export gating
 
 ## Next
 
-- Item 5: C2.5 utility transforms, scopes, and eyedropper.
+- Item 6: C2.6 camera IDTs (Bradford vs CAT02 ADR, OCIO oracle cross-check, test vectors).
 
 ## C2.1 Pure-Rust ACES Core Completion Summary (2026-10-26)
 
@@ -356,3 +357,34 @@ Tested using `cargo run --release -p filmcraft-gpu --example seq_bench` on genui
     - `cpu_export.mp4` (24.26 MB)
     - `gpu_export.mp4` (24.27 MB)
   - Automatically spawned Windows Explorer viewing `D:\FilmCraftX-ab`.
+
+## C2.5 Completion Summary (2026-10-26)
+
+- **Utility Transforms for sRGB/Rec.709 Inputs**:
+  - `crates/render/src/colorman.rs`: Added `convert_srgb_linear_to_working(img, pipe)`: applies `gamut_matrix(Gamut::Bt709, Gamut::Ap1)` to premultiplied RGB when `pipe.working.is_aces()`.
+  - `crates/render/src/plan.rs`: Applied utility transform to sRGB graphics, titles, overlays, generators, and shape items entering `WorkingSpace::AcesCg`.
+  - `crates/render/src/effects.rs` & `gpufx.rs`: Added `dec_color` converting authored sRGB parameter colors (drop shadow, stroke, circle, etc.) to AP1 scene-linear when working in ACES.
+  - Verified no inverse tone mapping and no gamut compression are applied.
+  - Test `utility_transform_for_srgb_into_acescg`: verifies white $[1, 1, 1]$ round-trips to $[1, 1, 1]$ in AP1, and FilmCraft display view maps AP1 red back to pure Rec.709 red $[1, 0, 0]$.
+
+- **Interim Gamut Compression (`ClipToAP1`) & Hue Shift Analysis**:
+  - `crates/color/src/transform.rs`: Added `InterimGamutCompression::ClipToAP1` which clips negative AP1 components to zero ($[r, g, b] \mapsto [\max(r, 0), \max(g, 0), \max(b, 0)]$) without modifying non-negative components.
+  - Test `interim_gamut_compression_clip_to_ap1_hue_shift`: evaluated synthetic out-of-gamut neon/laser colors and measured exact hue shift $\Delta \theta = |\theta_{\text{clipped}} - \theta_{\text{orig}}|$ where $\theta = \operatorname{atan2}(\sqrt{3}(G - B), 2R - G - B)$:
+    - Neon Blue ($[-0.15, 0.05, 1.20]$): hue shift of **$13.91^\circ$**
+    - Laser Green ($[0.02, 1.10, -0.08]$): hue shift of **$3.41^\circ$**
+    - LED Magenta ($[1.15, -0.10, 0.95]$): hue shift of **$4.88^\circ$**
+  - Confirmed `OutputTransform::display` maps clipped values into non-negative Rec.709 display range without error or NaN.
+
+- **GradeSpace::AcesCct Implementation & GPU Parity**:
+  - `crates/gpu/src/fx.wgsl`:
+    - Bound `LUMA_AP1 = vec3<f32>(0.2722287, 0.6740818, 0.0536895)` and added `gs_luma(c, mode)`.
+    - Added AMPAS S-2016-001 encoding (`acescct_enc1`) and decoding (`acescct_dec1`) for mode 3 (`GradeSpace::AcesCct`).
+    - Extended dynamic range handling across WGSL and CPU (`effects.rs`, `gpufx.rs`) so `GradeSpace::AcesCct` supports values $> 1.0$ without clipping (analogous to HDR).
+  - Test `gpu_lumetri_acescct_matches_cpu` in `crates/gpu/src/fx_tests.rs`: verifies CPU and GPU Lumetri Basic Correction and Wheels in ACEScct agree across the dynamic range with relative error $\le 6.18 \times 10^{-4}$ ($< 0.07\%$) and **0 code flips**.
+
+- **Scopes & Eyedropper in ACEScg Mode**:
+  - Scopes: `crates/engine/src/scopes.rs` rejects HDR (`2100`) scopes requests with `EngineError::Unsupported` when working in ACES. `crates/ui-egui/src/panels/scopes.rs` disables the `Rec2100` scope menu option with a tooltip explaining HDR scopes in ACES mode are planned for Stage B (ACES 2.0).
+  - Eyedropper / Keying: `crates/render/src/effects.rs` and `gpufx.rs` convert AP1 working pixels to display Rec.709 before evaluating key difference against user-selected swatches (`kycc`), and map despilled colors back into AP1.
+
+- **Export Preset Gating**:
+  - `crates/export/src/job.rs`: `ExportJob::start` rejects HDR export (`PQ` or `HLG` signal or `hdr_out`) when the active sequence uses `WorkingSpace::AcesCg`, returning `ExportError::Unsupported("HDR export (PQ/HLG) in ACES mode is planned for Stage B (ACES 2.0); only SDR Rec. 709 export is supported in Stage A")`.

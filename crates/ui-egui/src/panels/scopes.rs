@@ -199,8 +199,15 @@ pub fn settings_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     });
     ui.separator();
     sub(ui, &mut out, "colorSpaces", tl!("Colour Space"), &mut |ui, out| {
+        let is_aces = app.session.active_sequence().is_some_and(|q| q.settings.color.working.is_aces());
         for c in ColorSpace::ALL {
-            pick(ui, out, &format!("scopes.menu.colorSpace.{}", serde_name(&c)), crate::i18n::t(c.label()), st.color_space == c);
+            if is_aces && c == ColorSpace::Rec2100 {
+                ui.add_enabled_ui(false, |ui| {
+                    ui.selectable_label(false, crate::i18n::t(c.label())).on_disabled_hover_text(tl!("HDR scopes in ACES mode are planned for Stage B (ACES 2.0)"));
+                });
+            } else {
+                pick(ui, out, &format!("scopes.menu.colorSpace.{}", serde_name(&c)), crate::i18n::t(c.label()), st.color_space == c);
+            }
         }
     });
     sub(ui, &mut out, "brightnesses", tl!("Brightness"), &mut |ui, out| {

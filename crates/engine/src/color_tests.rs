@@ -280,14 +280,16 @@ fn aces_cg_working_space_and_gating_through_commands() {
     assert_eq!(q.settings.working_space, "ACEScg (AP1 Linear) (experimental, incomplete)");
     assert!(q.settings.color.is_aces());
     assert_eq!(q.settings.color.working_gamut(), filmcraft_color::Gamut::Ap1);
-    assert_eq!(q.settings.color.wide_gamut, false);
-    assert_eq!(q.settings.color.auto_tone_map, false);
+    assert!(!q.settings.color.wide_gamut);
+    assert!(!q.settings.color.auto_tone_map);
 
     // 4. sequence.settings also returns the visible notice
     let r2 = s.execute("sequence.settings", json!({"workingSpace": "aces-cg", "wideGamut": true})).unwrap();
     assert!(r2["notice"].as_str().unwrap().contains("wideGamut and autoToneMap are not applicable in ACEScg mode"));
     let q2 = s.active_sequence().unwrap();
     assert_eq!(q2.settings.color.working, filmcraft_color::WorkingSpace::AcesCg);
-    assert_eq!(q2.settings.color.wide_gamut, false);
+    assert!(!q2.settings.color.wide_gamut);
     filmcraft_color::set_experimental_aces_for_test(false);
 }
+
+

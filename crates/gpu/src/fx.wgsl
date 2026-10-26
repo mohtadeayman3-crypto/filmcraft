@@ -143,6 +143,33 @@ fn luma709(c: vec3<f32>) -> f32 {
 
 const REF_WHITE_NITS: f32 = 203.0;
 const LUMA_2020: vec3<f32> = vec3<f32>(0.2627002, 0.6779981, 0.05930172);
+const LUMA_AP1: vec3<f32> = vec3<f32>(0.2722287, 0.6740818, 0.0536895);
+
+fn gs_luma(c: vec3<f32>, mode: u32) -> f32 {
+    if mode == 3u {
+        return dot(LUMA_AP1, c);
+    }
+    return luma709(c);
+}
+
+const ACESCCT_A: f32 = 10.54023774;
+const ACESCCT_B: f32 = 0.072905534;
+const ACESCCT_X_BRK: f32 = 0.0078125;
+const ACESCCT_Y_BRK: f32 = 0.15525114;
+
+fn acescct_enc1(lin: f32) -> f32 {
+    if lin <= ACESCCT_X_BRK {
+        return ACESCCT_A * lin + ACESCCT_B;
+    }
+    return (log2(max(lin, 1e-10)) + 9.72) / 17.52;
+}
+
+fn acescct_dec1(cct: f32) -> f32 {
+    if cct <= ACESCCT_Y_BRK {
+        return (cct - ACESCCT_B) / ACESCCT_A;
+    }
+    return exp2(cct * 17.52 - 9.72);
+}
 
 fn pq_eotf1(e: f32) -> f32 {
     let m1 = 0.15930176;
@@ -199,6 +226,9 @@ fn gs_encode(c: vec3<f32>, mode: u32, white: f32, p2: f32) -> vec3<f32> {
         let fdk = fd * k;
         return vec3(hlg_oetf1(fdk.x), hlg_oetf1(fdk.y), hlg_oetf1(fdk.z));
     }
+    if mode == 3u {
+        return vec3(acescct_enc1(c.x), acescct_enc1(c.y), acescct_enc1(c.z));
+    }
     return enc(c);
 }
 
@@ -216,6 +246,9 @@ fn gs_decode(v: vec3<f32>, mode: u32, white: f32, p2: f32) -> vec3<f32> {
         }
         let k = powf(ys, p2 - 1.0);
         return es * (k * white / REF_WHITE_NITS);
+    }
+    if mode == 3u {
+        return vec3(acescct_dec1(v.x), acescct_dec1(v.y), acescct_dec1(v.z));
     }
     return dec(v);
 }
@@ -548,7 +581,7 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
     // highlights / shadows: luma-weighted lift/compress, hue preserving
     let sh_k = u.p1.y;
     let hl_k = u.p1.z;
-    let l = luma709(v);
+    let l = gs_luma(v, gs_mode);
     let ws_val = clamp(1.0 - l, 0.0, 1.0);
     let ws = ws_val * ws_val * ws_val;
     let whl_val = clamp(l, 0.0, 1.0);
@@ -599,14 +632,14 @@ fn lumetri_op(c: vec3<f32>, p: vec2<i32>) -> vec3<f32> {
     if creative_on {
         let st_k = u.p4.xyz;
         let ht_k = u.p5.xyz;
-        let l2 = clamp(luma709(v), 0.0, 1.0);
+        let l2 = clamp(gs_luma(v, gs_mode), 0.0, 1.0);
         v = v + st_k * (1.0 - l2) + ht_k * l2;
     }
 
     // saturation & vibrance
     let sat = u.p2.y;
     let vib = u.p2.z;
-    let l3 = luma709(v);
+    let l3 = gs_luma(v, gs_mode);
     let cur_sat = max(max(v.x, v.y), v.z) - min(min(v.x, v.y), v.z);
     let sat_mult = sat * (1.0 + vib * (1.0 - clamp(cur_sat, 0.0, 1.0)));
     v = vec3(l3) + (v - vec3(l3)) * sat_mult;
@@ -813,7 +846,7 @@ fn lumetri_adv_op(c: vec3<f32>) -> vec3<f32> {
         v = v + (lk - v) * look_k;
     }
     if wheels_on {
-        let l = clamp(luma709(v), 0.0, 1.0);
+        let l = clamp(gs_luma(v, gs_mode), 0.0, 1.0);
         let om = 1.0 - l;
         let wsh = om * om;
         let whi = l * l;

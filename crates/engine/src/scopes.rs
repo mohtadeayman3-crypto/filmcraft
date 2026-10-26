@@ -47,6 +47,9 @@ fn scopes_read(s: &mut Session, p: &Value) -> Result<Value> {
     let hdr_seq = seq.settings.color.working.is_hdr();
     let rate = seq.settings.frame_rate;
     let space = match str_p(p, "colorSpace") {
+        Some("2100") if seq.settings.color.working.is_aces() => {
+            return Err(bad("scopes.read", "Rec. 2100 HDR scopes in ACES mode are planned for Stage B (ACES 2.0); only SDR Rec. 709 scopes are supported in Stage A"));
+        }
         Some(c) => ColorSpace::from_name(c).ok_or_else(|| bad("scopes.read", format!("unknown colorSpace `{c}` (auto, 601, 709, 2100)")))?,
         None => ColorSpace::Auto,
     }

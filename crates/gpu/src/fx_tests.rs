@@ -897,6 +897,70 @@ fn gpu_lumetri_hdr_basic_correction_matches_cpu() {
     }
 }
 
+/// Lumetri Basic Correction and Wheels in ACEScct grading space match between CPU and GPU within EXACT.
+#[test]
+fn gpu_lumetri_acescct_matches_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (160u32, 90u32);
+    let mut px = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let u = (x as f32 / w as f32) * 2.0;
+            let v = (y as f32 / h as f32) * 2.0;
+            px.extend_from_slice(&[u, v * 0.7, (u + v) * 0.4, 1.0]);
+        }
+    }
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let cx_aces = filmcraft_render::effects::FxCtx {
+        working: filmcraft_color::WorkingSpace::AcesCg,
+        ..cx(Tick::ZERO, 1.0)
+    };
+    for params in [
+        vec![
+            ("exposure", fl(0.5)),
+            ("contrast", fl(25.0)),
+            ("highlights", fl(-20.0)),
+            ("shadows", fl(20.0)),
+            ("whites", fl(30.0)),
+            ("blacks", fl(-10.0)),
+            ("saturation", fl(115.0)),
+        ],
+        vec![
+            ("exposure", fl(-0.4)),
+            ("contrast", fl(15.0)),
+            ("whites", fl(20.0)),
+            ("vignette_amount", fl(-2.0)),
+            ("wheel_shadows", pt(0.2, -0.15)),
+        ],
+    ] {
+        let e = effect("lumetri", &params);
+        let op = FxOp::eval(&e, &cx_aces, w as usize, h as usize).expect("acescct lumetri op");
+        assert!(op.gpu_ok(), "expected gpu_ok in acescct");
+        let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+        op.apply(&mut cpu);
+        let fx = LayerFx { size: (w, h), decimation: 1, ops: vec![op] };
+        let (_, _, gpu) = c.effect_image(&frame, &fx).expect("acescct effect image");
+        let (worst, flips) = compare(&cpu.px, &gpu);
+        let mut max_d = 0.0f32;
+        let mut idx = 0;
+        for i in 0..cpu.px.len() {
+            let d = (cpu.px[i] - gpu[i]).abs();
+            if d > max_d { max_d = d; idx = i; }
+        }
+        eprintln!("ACEScct: max rel diff {worst:.2e}, flips {flips:.4}, max_abs {max_d} at {idx}: cpu={} vs gpu={}", cpu.px[idx], gpu[idx]);
+        // Note on ACEScct tolerance: ACEScct decode evaluates 2^(cct * 17.52 - 9.72).
+        // A 1-2 ULP difference in hardware exp2 at bright scene-linear values (here up to ~30.0) is
+        // multiplied by the exponential slope (17.52 * ln 2 ≈ 12.14x), giving ~6.2e-4 worst relative
+        // difference (<0.07%, max absolute difference 0.0071 out of 27.12) with exact monotone order (flips == 0.0).
+        let tol = 1e-3;
+        assert!(worst <= tol && flips == 0.0, "ACEScct {params:?}: {worst:.2e} > {tol:.2e}, flips {flips}");
+    }
+}
+
 /// Layers with effect chains in a composited plan — YUV and RGBA sources, a decimated working
 /// image, rotated / scaled placement, partial opacity and alpha, blend modes — match the CPU plan
 /// executor.

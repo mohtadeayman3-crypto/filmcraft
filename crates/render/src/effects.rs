@@ -79,6 +79,20 @@ pub(crate) fn dec(c: [f32; 3]) -> [f32; 3] {
     [srgb_to_linear(c[0].clamp(0.0, 1.0)), srgb_to_linear(c[1].clamp(0.0, 1.0)), srgb_to_linear(c[2].clamp(0.0, 1.0))]
 }
 
+pub(crate) fn dec_color(c: [f32; 3], working: filmcraft_color::WorkingSpace) -> [f32; 3] {
+    let mut lc = dec(c);
+    if working.is_aces() {
+        let m = filmcraft_color::spaces::gamut_matrix(filmcraft_color::Gamut::Bt709, filmcraft_color::Gamut::Ap1);
+        let m = [
+            [m[0][0] as f32, m[0][1] as f32, m[0][2] as f32],
+            [m[1][0] as f32, m[1][1] as f32, m[1][2] as f32],
+            [m[2][0] as f32, m[2][1] as f32, m[2][2] as f32],
+        ];
+        lc = filmcraft_color::spaces::apply3(&m, lc);
+    }
+    lc
+}
+
 /// Stable seed for the *exact* frame timestamp. A fixed 30 Hz quantizer
 /// would reuse the same noise field at 60/120 fps and can repeat at 30 fps
 /// through floating-point rounding of seconds.
@@ -228,7 +242,7 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             if (cx.seconds % period) < dur {
                 let c = color(e, "color", cx);
                 let blend = f(e, "blend", cx) / 100.0;
-                let lc = dec([c[0], c[1], c[2]]);
+                let lc = dec_color([c[0], c[1], c[2]], cx.working);
                 img.map_rgb(|o, _, _| [lc[0] + (o[0] - lc[0]) * blend, lc[1] + (o[1] - lc[1]) * blend, lc[2] + (o[2] - lc[2]) * blend]);
             }
         }
@@ -314,7 +328,7 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             let soft = f(e, "softness", cx) * cx.px_scale * 0.5;
             let only = b(e, "only");
             let (dx, dy) = (dir.sin() * dist, -dir.cos() * dist);
-            let lc = dec([c[0], c[1], c[2]]);
+            let lc = dec_color([c[0], c[1], c[2]], cx.working);
             let mut sh = img.transformed(img.w, img.h, &Affine::translate(dx, dy));
             sh.px.par_chunks_mut(4).for_each(|p| {
                 let a = p[3] * op;
@@ -355,11 +369,16 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         "luma_key" => {
             let th = f(e, "threshold", cx) / 100.0;
             let cut = f(e, "cutoff", cx) / 100.0;
+            let luma_w = if cx.working.is_aces() {
+                [0.2722287, 0.6740818, 0.0536895]
+            } else {
+                [0.2126, 0.7152, 0.0722]
+            };
             img.px.par_chunks_mut(4).for_each(|p| {
                 if p[3] <= 0.0 {
                     return;
                 }
-                let l = linear_to_srgb(luma709(p[0] / p[3], p[1] / p[3], p[2] / p[3]).max(0.0));
+                let l = linear_to_srgb((luma_w[0] * p[0] / p[3] + luma_w[1] * p[1] / p[3] + luma_w[2] * p[2] / p[3]).max(0.0));
                 let a = if l <= cut {
                     0.0
                 } else if l >= th.max(cut + 1e-3) {
@@ -416,7 +435,7 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             let r = f(e, "radius", cx) * cx.px_scale;
             let col = color(e, "color", cx);
             let op = f(e, "opacity", cx) / 100.0;
-            let lc = dec([col[0], col[1], col[2]]);
+            let lc = dec_color([col[0], col[1], col[2]], cx.working);
             let w = img.w;
             img.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
                 for x in 0..w {
@@ -437,7 +456,7 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             let border = f(e, "border", cx) * cx.px_scale;
             let col = color(e, "color", cx);
             let op = f(e, "opacity", cx) / 100.0;
-            let lc = dec([col[0], col[1], col[2]]);
+            let lc = dec_color([col[0], col[1], col[2]], cx.working);
             let w = img.w;
             let (ox, oy) = (img.w as f32 / 2.0, img.h as f32 / 2.0);
             img.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
@@ -571,11 +590,40 @@ pub(crate) fn key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     } else {
         0
     };
+    let aces = cx.working.is_aces();
+    let ap1_to_709 = if aces {
+        let m = filmcraft_color::spaces::gamut_matrix(filmcraft_color::Gamut::Ap1, filmcraft_color::Gamut::Bt709);
+        Some([
+            [m[0][0] as f32, m[0][1] as f32, m[0][2] as f32],
+            [m[1][0] as f32, m[1][1] as f32, m[1][2] as f32],
+            [m[2][0] as f32, m[2][1] as f32, m[2][2] as f32],
+        ])
+    } else {
+        None
+    };
+    let bt709_to_ap1 = if aces {
+        let m = filmcraft_color::spaces::gamut_matrix(filmcraft_color::Gamut::Bt709, filmcraft_color::Gamut::Ap1);
+        Some([
+            [m[0][0] as f32, m[0][1] as f32, m[0][2] as f32],
+            [m[1][0] as f32, m[1][1] as f32, m[1][2] as f32],
+            [m[2][0] as f32, m[2][1] as f32, m[2][2] as f32],
+        ])
+    } else {
+        None
+    };
     img.px.par_chunks_mut(4).for_each(|p| {
         if p[3] <= 0.0 {
             return;
         }
-        let c = enc([p[0] / p[3], p[1] / p[3], p[2] / p[3]]);
+        let lin = [p[0] / p[3], p[1] / p[3], p[2] / p[3]];
+        let lin_709 = match ap1_to_709 {
+            Some(m) => {
+                let c = filmcraft_color::spaces::apply3(&m, lin);
+                filmcraft_color::transform::desaturate_into_gamut(c, [0.2126, 0.7152, 0.0722])
+            }
+            None => lin,
+        };
+        let c = enc(lin_709);
         let ycc = filmcraft_color::rgb_to_ycbcr(c[0], c[1], c[2], filmcraft_color::Matrix::Bt709);
         let d = ((ycc[1] - kycc[1]).powi(2) + (ycc[2] - kycc[2]).powi(2)).sqrt() + (ycc[0] - kycc[0]).abs() * 0.15;
         let alpha = ((d - tol) / soft).clamp(0.0, 1.0);
@@ -587,7 +635,10 @@ pub(crate) fn key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             }
         }
         let a = p[3] * alpha;
-        let lo = dec(o);
+        let mut lo = dec(o);
+        if let Some(m) = bt709_to_ap1 {
+            lo = filmcraft_color::spaces::apply3(&m, lo);
+        }
         match output {
             1 => {
                 p.copy_from_slice(&[alpha * p[3], alpha * p[3], alpha * p[3], p[3]]);
@@ -627,7 +678,7 @@ fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let bf = |id: &str| if basic_on { f(e, id, cx) } else { 0.0 };
     // HDR: the sliders work on the PQ / HLG signal normalised to HDR White (cd/m²)
     let gs = grade_space(e, cx, "hdr_white");
-    let hdr = gs.is_hdr();
+    let hdr = gs.is_hdr() || gs == GradeSpace::AcesCct;
     let specular = if hdr { bf("hdr_specular") / 100.0 } else { 0.0 };
     let temp = bf("temperature") / 100.0;
     let tint = bf("tint") / 100.0;
@@ -663,7 +714,8 @@ fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         let w0 = 1.0 - wh * 0.15;
         v = v.map(|q| (q - b0) / (w0 - b0).max(1e-3));
         // highlights / shadows: luma-weighted lift/compress, hue preserving
-        let l = 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+        let luma_w = if cx.working.is_aces() { [0.2722287, 0.6740818, 0.0536895] } else { [0.2126, 0.7152, 0.0722] };
+        let l = luma_w[0] * v[0] + luma_w[1] * v[1] + luma_w[2] * v[2];
         let ws = (1.0 - l).clamp(0.0, 1.0).powi(3);
         let whl = l.clamp(0.0, 1.0).powi(3);
         let nl = (l + sh * 0.35 * ws + hl * 0.35 * whl).max(0.0);
@@ -694,13 +746,13 @@ fn lumetri(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         }
         // split tone
         if creative_on {
-            let l2 = (0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]).clamp(0.0, 1.0);
+            let l2 = (luma_w[0] * v[0] + luma_w[1] * v[1] + luma_w[2] * v[2]).clamp(0.0, 1.0);
             for k in 0..3 {
                 v[k] += (st[k] - 0.5) * 0.3 * (1.0 - l2) + (ht[k] - 0.5) * 0.3 * l2;
             }
         }
         // saturation & vibrance
-        let l3 = 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+        let l3 = luma_w[0] * v[0] + luma_w[1] * v[1] + luma_w[2] * v[2];
         let cur_sat = v[0].max(v[1]).max(v[2]) - v[0].min(v[1]).min(v[2]);
         let s = sat * (1.0 + vib * (1.0 - cur_sat.clamp(0.0, 1.0)));
         v = v.map(|q| l3 + (q - l3) * s);
@@ -1150,7 +1202,8 @@ fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     }
     // HDR: curves, wheels and looks span 0 … the curves' HDR Range (cd/m²)
     let gs = grade_space(e, cx, "curves_hdr_range");
-    let hdr = gs.is_hdr();
+    let hdr = gs.is_hdr() || gs == GradeSpace::AcesCct;
+    let luma_w = if cx.working.is_aces() { [0.2722287, 0.6740818, 0.0536895] } else { [0.2126, 0.7152, 0.0722] };
     let sample = |l: &Vec<f32>, x: f32| {
         // above HDR White a curve continues with slope 1 from its end point
         if hdr && x > 1.0 {
@@ -1171,7 +1224,7 @@ fn lumetri_advanced(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             v = [v[0] + (lk[0] - v[0]) * look_k, v[1] + (lk[1] - v[1]) * look_k, v[2] + (lk[2] - v[2]) * look_k];
         }
         if wheels {
-            let l = (0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]).clamp(0.0, 1.0);
+            let l = (luma_w[0] * v[0] + luma_w[1] * v[1] + luma_w[2] * v[2]).clamp(0.0, 1.0);
             let wsh = (1.0 - l).powi(2);
             let whi = l * l;
             let wmid = (1.0 - wsh - whi).max(0.0);

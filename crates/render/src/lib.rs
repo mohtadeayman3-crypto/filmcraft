@@ -477,6 +477,9 @@ pub(crate) fn item_layer_ex(
         let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion);
         let mut canvas = Image::new(w, h);
         graphic_clip::render_graphic(item, mt, src_size, &m, &mut canvas);
+        if seq.settings.color.working.is_aces() {
+            colorman::convert_srgb_linear_to_working(&mut canvas, &seq.settings.color);
+        }
         let (op, bl) = opacity_blend(item, mt);
         return Some(Layer::Full { image: canvas, opacity: op, blend: bl, opaque: false });
     }
@@ -632,6 +635,9 @@ pub(crate) fn base_layer(
             let (gw, gh) = (((src_size.0 as f32 * want).ceil() as usize).max(1), ((src_size.1 as f32 * want).ceil() as usize).max(1));
             let mut img = Image::new(gw, gh);
             graphic_clip::render_graphic(item, mt, src_size, &Affine::scale(want as f64, want as f64), &mut img);
+            if seq.settings.color.working.is_aces() {
+                colorman::convert_srgb_linear_to_working(&mut img, &seq.settings.color);
+            }
             img
         }
     })

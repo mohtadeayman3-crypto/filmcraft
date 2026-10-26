@@ -107,6 +107,24 @@ pub fn display_transform(pipe: &ColorPipeline) -> Arc<OutputTransform> {
     c.lock().unwrap_or_else(|e| e.into_inner()).entry(*pipe).or_insert_with(|| Arc::new(OutputTransform::display(pipe))).clone()
 }
 
+/// Convert an image in linear BT.709 (sRGB transfer decoded, straight or premultiplied alpha)
+/// into the sequence working space (utility transform).
+///
+/// In ACEScg mode, multiplies RGB by `gamut_matrix(Gamut::Bt709, Gamut::Ap1)`, preserving alpha.
+/// In legacy modes, this is an exact no-op.
+pub fn convert_srgb_linear_to_working(img: &mut Image, pipe: &ColorPipeline) {
+    if !pipe.working.is_aces() {
+        return;
+    }
+    let m = filmcraft_color::spaces::gamut_matrix(filmcraft_color::Gamut::Bt709, filmcraft_color::Gamut::Ap1);
+    let m = [
+        [m[0][0] as f32, m[0][1] as f32, m[0][2] as f32],
+        [m[1][0] as f32, m[1][1] as f32, m[1][2] as f32],
+        [m[2][0] as f32, m[2][1] as f32, m[2][2] as f32],
+    ];
+    img.map_rgb(|c, _, _| filmcraft_color::spaces::apply3(&m, c));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

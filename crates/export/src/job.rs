@@ -229,6 +229,9 @@ impl Exporter {
         // writes Main 10) unless SDR is asked for; elsewhere H.265 is tone-mapped 8-bit SDR
         let pipe = q.settings.color;
         let hdr_out = hdr_output(pipe.working.is_hdr(), settings.sdr, settings.video_format(), crate::hdr_available);
+        if pipe.working.is_aces() && (settings.signal == ColorSignal::PQ || settings.signal == ColorSignal::HLG || hdr_out) {
+            return Err(ExportError::Unsupported("HDR export (PQ/HLG) in ACES mode is planned for Stage B (ACES 2.0); only SDR Rec. 709 export is supported in Stage A".into()));
+        }
         let mut settings = settings.clone();
         settings.signal = match (hdr_out, pipe.working) {
             (true, filmcraft_color::WorkingSpace::Rec2100Pq) => ColorSignal::PQ,

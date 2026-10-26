@@ -542,7 +542,7 @@ impl FxOp {
                 let (basic_on, creative_on, vignette_on) = (on(e, "basic_on"), on(e, "creative_on"), on(e, "vignette_on"));
                 let basic_gs = grade_space(e, cx, "hdr_white");
                 let adv_gs = grade_space(e, cx, "curves_hdr_range");
-                let is_hdr = basic_gs.is_hdr();
+                let is_hdr = basic_gs.is_hdr() || basic_gs == filmcraft_color::GradeSpace::AcesCct;
                 let input_lut = if basic_on { crate::luts::resolve(cx.project, text(e, "input_lut")) } else { None };
                 let look_lut = if creative_on { crate::luts::resolve(cx.project, text(e, "look_lut")) } else { None };
                 let look = if creative_on && look_lut.is_none() { choice(e, "look") } else { 0 };
@@ -1114,7 +1114,12 @@ impl FxOp {
                     aspect,
                     ..
                 } = **l;
-                let hdr = basic_gs.is_hdr();
+                let hdr = basic_gs.is_hdr() || basic_gs == filmcraft_color::GradeSpace::AcesCct;
+                let luma_w = if basic_gs == filmcraft_color::GradeSpace::AcesCct {
+                    [0.2722287, 0.6740818, 0.0536895]
+                } else {
+                    [0.2126, 0.7152, 0.0722]
+                };
                 let (w, h) = (img.w as f32, img.h as f32);
                 let input_lut = l.input_lut.as_deref();
                 img.map_rgb(|c, x, y| {
@@ -1130,7 +1135,7 @@ impl FxOp {
                     let w0 = 1.0 - wh * 0.15;
                     v = v.map(|q| (q - b0) / (w0 - b0).max(1e-3));
                     // highlights / shadows: luma-weighted lift/compress, hue preserving
-                    let l = 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+                    let l = luma_w[0] * v[0] + luma_w[1] * v[1] + luma_w[2] * v[2];
                     let ws = (1.0 - l).clamp(0.0, 1.0).powi(3);
                     let whl = l.clamp(0.0, 1.0).powi(3);
                     let nl = (l + sh * 0.35 * ws + hl * 0.35 * whl).max(0.0);
@@ -1161,13 +1166,13 @@ impl FxOp {
                     }
                     // split tone
                     if creative_on {
-                        let l2 = (0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]).clamp(0.0, 1.0);
+                        let l2 = (luma_w[0] * v[0] + luma_w[1] * v[1] + luma_w[2] * v[2]).clamp(0.0, 1.0);
                         for k in 0..3 {
                             v[k] += (st[k] - 0.5) * 0.3 * (1.0 - l2) + (ht[k] - 0.5) * 0.3 * l2;
                         }
                     }
                     // saturation & vibrance
-                    let l3 = 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+                    let l3 = luma_w[0] * v[0] + luma_w[1] * v[1] + luma_w[2] * v[2];
                     let cur_sat = v[0].max(v[1]).max(v[2]) - v[0].min(v[1]).min(v[2]);
                     let s = sat * (1.0 + vib * (1.0 - cur_sat.clamp(0.0, 1.0)));
                     v = v.map(|q| l3 + (q - l3) * s);
@@ -1188,7 +1193,12 @@ impl FxOp {
                     let (adv_gs, look, look_k, wheels_on, wheel_sh, wheel_mid, wheel_hi, curve_mask) =
                         (l.adv_gs, l.look, l.look_k, l.wheels_on, l.wheel_sh, l.wheel_mid, l.wheel_hi, l.curve_mask);
                     let look_lut = l.look_lut.as_deref();
-                    let adv_hdr = adv_gs.is_hdr();
+                    let adv_hdr = adv_gs.is_hdr() || adv_gs == filmcraft_color::GradeSpace::AcesCct;
+                    let adv_luma_w = if adv_gs == filmcraft_color::GradeSpace::AcesCct {
+                        [0.2722287, 0.6740818, 0.0536895]
+                    } else {
+                        [0.2126, 0.7152, 0.0722]
+                    };
                     let [luma_c, red_c, green_c, blue_c, hvs, hvh, hvl, lvs, svs] = &l.curves;
                     let sample = |lut: &[f32], x: f32| -> f32 {
                         let n = lut.len();
@@ -1213,7 +1223,7 @@ impl FxOp {
                             v = [v[0] + (lk[0] - v[0]) * look_k, v[1] + (lk[1] - v[1]) * look_k, v[2] + (lk[2] - v[2]) * look_k];
                         }
                         if wheels_on {
-                            let luma = (0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]).clamp(0.0, 1.0);
+                            let luma = (adv_luma_w[0] * v[0] + adv_luma_w[1] * v[1] + adv_luma_w[2] * v[2]).clamp(0.0, 1.0);
                             let wsh = (1.0 - luma).powi(2);
                             let whi = luma * luma;
                             let wmid = (1.0 - wsh - whi).max(0.0);
