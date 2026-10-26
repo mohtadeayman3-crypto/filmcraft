@@ -687,3 +687,40 @@ C1.9 CPU decode cost).
   then C2.1/C2.4/C2.5 — or ACES-first (C2.1 → C2.5)?
 - **Q6 — Defaults in ACES mode.** RGC on, display-referred media via inverse OT (once C2.9
   lands), output SDR Rec.709 100 nit — OK?
+
+
+---
+
+## 12. Addendum: Inspection of `composite.wgsl` and Compositor Bindings (C2.2 Findings)
+
+Inspecting `crates/gpu/src/composite.wgsl` and `crates/gpu/src/lib.rs` confirms the exact GPU pipeline structure for C2.2:
+
+1. **Pipeline & Bind Group Layout:**
+   - Both direct layer compositing (`layer_pipeline`, `blend_pipeline`) and the effect source pass (`fs_fx_source` in `fx.rs`) share `composite.wgsl`'s vertex and fragment logic.
+   - `layer_bgl` currently defines:
+     - `@binding(0)`: Uniform buffer `U` (52 `f32`s: 28 layer floats + 24 colour management `q0..q5` floats).
+     - `@binding(1)`: `tex0` (Y or RGBA).
+     - `@binding(2)`: `tex1` (U / Cb).
+     - `@binding(3)`: `tex2` (V / Cr).
+     - `@binding(4)`: `backdrop` (only present in `blend_bgl`; omitted in `layer_bgl`).
+     - `@binding(5)`: `tex3` (alpha plane, or `dummy`).
+   - `@binding(6)` can be added cleanly to both `layer_bgl` and `blend_bgl`:
+     `@group(0) @binding(6) var lut_table: texture_2d<f32>;`
+     For SDR / linear / PQ / HLG layers that do not need a decode table, slot 6 binds `self.dummy` (which already exists as a 1×1 texture). For log layers, slot 6 binds the cached 8192×1 `R32Float` `DecodeTable` texture.
+
+2. **Log Signal Domain & Clamping in `managed()`:**
+   - In `composite.wgsl`, line 128 currently clamps signal inputs: `let v = clamp(rgb, vec3(0.0), vec3(1.0));`.
+   - Log media uses `DecodeTable` with range `lo = -0.1`, `hi = 1.1` (8192 samples). For log curves, clamping must be extended to `clamp(rgb, vec3(-0.1), vec3(1.1))` (or inside `sample_decode_table`) to preserve sub-blacks and super-whites up to 1.1.
+
+3. **Gamut Compression in WGSL:**
+   - `InputTransform::apply` applies `gamut_compress` after the gamut matrix and tone mapping.
+   - In `composite.wgsl`, `gamut_compress` will be added to `managed()`:
+     - `s = (1.25 - 0.8) / pow(pow((1.25 - 0.8) / (1.0 - 0.8), 1.2) - 1.0, 1.0 / 1.2) ≈ 0.29803417`.
+     - Distance `d = (ach - v) / ach` with threshold 0.8 and power 1.2.
+     - Activated via uniform flag (e.g. in `q0` or `q5`).
+
+4. **Integration with `plan.rs` (`C1.9` CPU decode bypass):**
+   - In `crates/render/src/plan.rs`, `plain` is defined as `(input.is_some() || !needs_management(pipe, cs, &frame)) && no_blend`.
+   - When `gpu_input` returns `Some(input)` for log clips, `plain` becomes `true`.
+   - The clip retains its raw `Yuv8` / `Yuv16` `frame` and passes `input` to `PlanLayer`.
+   - When effects are present (`!chain.is_empty()`), `fs_fx_source` draws the YUV frame directly into `FxStage` `views[0]` via the GPU decode table, completely eliminating the CPU decode and the 66 MB `f16` CPU upload per 4K frame!
