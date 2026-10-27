@@ -214,11 +214,16 @@ fn locate_media_file() -> Option<PathBuf> {
             return Some(pb);
         }
     }
-    let candidates = [
-        PathBuf::from("C:/Users/Mohtady/Downloads/C1102.MP4"),
+    let mut candidates = vec![
         PathBuf::from("test_assets/C1102.MP4"),
         PathBuf::from("D:/FilmCraftX/test_assets/C1102.MP4"),
     ];
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        candidates.push(PathBuf::from(profile).join("Downloads").join("C1102.MP4"));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        candidates.push(PathBuf::from(home).join("Downloads").join("C1102.MP4"));
+    }
     for c in candidates {
         if c.exists() {
             return Some(c);
