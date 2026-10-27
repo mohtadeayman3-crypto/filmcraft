@@ -653,20 +653,29 @@ stages) with parity tests; documented in `build_effects()` agent docs.
 Each stage is one or a few commits with its own tests, `cargo xtask ci` green, docs updated
 (crate README, `docs/C2-STATUS.md`).
 
+### Stage A: ACEScg Working Space & FilmCraft View (Current Stage)
+
+| Stage | Content | Status | User-visible |
+|---|---|---|---|
+| **C2.1** | `Gamut::white()`, Bradford CAT in `gamut_matrix` (only when whites differ), `Gamut::Ap0/Ap1`, ACEScct / ACEScc curves, matrix cross-checks. | Done (`ab3f27fc`) | no (library) |
+| **C2.2** | Camera log on the GPU: decode-table texture, gamut compression in WGSL, `gpu_params()`, raw YUV upload; parity + benchmark. | Done (`3a829356`) | yes: faster log playback |
+| **C2.3** | Baseline golden hashes & project schema bump (`SCHEMA_VERSION = 16`). | Done (`744b6bd5`) | no |
+| **C2.4** | `WorkingSpace::AcesCg`, `GradeSpace::AcesCct`, experimental switch (`FILMCRAFT_EXPERIMENTAL_ACES=1`), commands returning visible notice. | Done (`3b05ab37`) | commands/UI (gated) |
+| **C2.5** | Utility transforms for sRGB/Rec.709 inputs into ACEScg, `GradeSpace::AcesCct` in WGSL/CPU with dynamic range parity, `InterimGamutCompression::ClipToAP1` with hue-shift characterization, scopes and export HDR gating. | Done (`dc7c642e`) | yes |
+| **C2.6** | Camera IDTs to AP1 with explicit Bradford vs CAT02 decision recorded in an ADR, OCIO 2.6 oracle cross-check, test vectors. | In progress | yes: camera media in ACEScg |
+| **C2.8** | FilmCraft view output (display tone and gamut mapping fed from ACEScg) and end-to-end export test. | Pending | yes: ACEScg sequence export |
+
+### Stage B: Normative ACES 2.0 Output Transforms & RGC (Next Stage)
+
 | Stage | Content | Depends on | User-visible |
 |---|---|---|---|
-| **C2.1** | `Gamut::white()`, Bradford CAT in `gamut_matrix` (only when whites differ), `Gamut::Ap0/Ap1`, ACEScct / ACEScc curves, ACES `ColorSpace`s (CPU), §6.2 reference tests, legacy pin tests. | — | no (library) |
-| **C2.2** | **Camera log on the GPU**: decode-table texture in the source shader, gamut compression in WGSL, `gpu_params()` for log, `gpu_input` for log Y'CbCr; plan keeps raw YUV; parity + benchmark. | — | yes: faster log playback in legacy |
-| **C2.3** | GPU display/output transform for non-plain legacy pipelines (HDR working, wide gamut); drop the `is_plain()` gate in `gpu_input`. | C2.2 | yes: HDR/wide-gamut sequences on GPU |
-| **C2.4** | Schema: `ColorManagement`, `AcesSettings`, schema bump + fixture test, `sequence.colorManagement` / `sequence.colorInfo` commands, docs/project-files.md. | C2.1 | commands only |
-| **C2.5** | ACES working pipeline: IDTs into ACEScg (CPU + GPU), RGC (verified constants), `GradeSpace::Acescct` (CPU + WGSL), option-C view (FilmCraft display transform from ACEScg), display-referred media "linear" stand-in. | C2.1–C2.4 | yes: ACES mode (FilmCraft view) |
-| **C2.6** | ACES 2.0 Output Transform CPU reference (f64): SDR Rec.709 100 nit; oracle table (after Q1); property tests. | C2.5, Q1 | yes: "ACES 2.0" view (CPU) |
-| **C2.7** | OT presets PQ 1000 and HLG 1000; export encoding and export override; HDR metadata. | C2.6 | yes: ACES HDR delivery |
-| **C2.8** | OT on the GPU (analytic + tables; LUT fallback if needed); parity; 4K benchmark. | C2.3, C2.6 | yes: real-time ACES |
-| **C2.9** | Inverse OT; default handling of display-referred media and graphics in ACES mode; round-trip tests. | C2.6 | yes: titles look right |
-| **C2.10** | Color Space Transform effect (CPU + GPU, agent docs, parity). | C2.5 (OT presets after C2.7) | yes |
-| **C2.11** | UI: Sequence Settings, Interpret Footage, Lumetri badge, monitor indicator, scopes option, export panel; automation ids; screenshots via the control channel; scopes/keyers audit. | C2.4–C2.9 | yes |
-| **C2.12** (optional) | ACES 1.3 RRT/ODT for matching legacy ACES pipelines; AP0 EXR export; EXR chromaticities detection. | Q2 | optional |
+| **C2.B1** | ACES 2.0 Output Transform CPU reference (f64): SDR Rec.709 100 nit; oracle table; property tests. | Stage A, OCIO 2.6 | yes: "ACES 2.0" view (CPU) |
+| **C2.B2** | OT presets PQ 1000 and HLG 1000; export encoding and export override; HDR metadata. | C2.B1 | yes: ACES HDR delivery |
+| **C2.B3** | OT on the GPU (analytic + tables; LUT fallback if needed); parity; 4K benchmark. | C2.B1 | yes: real-time ACES 2.0 |
+| **C2.B4** | Inverse OT; default handling of display-referred media and graphics in ACES mode; round-trip tests. | C2.B1 | yes: titles look right |
+| **C2.B5** | ACES Reference Gamut Compression (RGC) parameter verification against OCIO 2.6 built-in. | C2.B1 | yes: full ACES RGC |
+| **C2.B6** | Color Space Transform effect (CPU + GPU, agent docs, parity). | C2.B1–C2.B5 | yes |
+| **C2.B7** | UI polish, scopes/keyers audit, automation ids, screenshots via control channel. | C2.B1–C2.B6 | yes |
 
 C2.2 and C2.3 do not depend on ACES and can start right after approval (they also remove the
 C1.9 CPU decode cost).

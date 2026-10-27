@@ -52,11 +52,28 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
 - [x] Item 2 GPU Golden Outputs: legacy-mode GPU golden checks passing (`legacy_gpu_golden_outputs_remain_unchanged`)
 - [x] Item 3 docs/FORK.md: Documented schema v16 incompatibility and dynamic schema downgrade proposal
 - [x] Item 4 Task F1: Default export `gpu_rendering` to `Auto` in fork, verified with repeatable 10s MP4 export comparison
-- [x] Item 5 C2.5: Utility transforms, GradeSpace::AcesCct WGSL/CPU parity, interim gamut compression, and scopes/export gating
+- [x] Item 5 C2.5: Utility transforms, GradeSpace::AcesCct WGSL/CPU parity, interim gamut compression (ClipToAP1), and scopes/export gating
+
+## Stage Plan & Inventory
+
+### Stage A: ACEScg Working Space & FilmCraft View (Current Stage)
+- [x] **C2.1**: Pure-Rust ACES core (`filmcraft-color` AP0/AP1 chromaticities, Bradford CAT, matrix derivation, ACEScc/ACEScct curves).
+- [x] **C2.2**: Camera log GPU decode path via 1D table texture and WGSL gamut compression.
+- [x] **C2.3**: Baseline golden hashes & project schema bump (`SCHEMA_VERSION = 16`).
+- [x] **C2.4**: `WorkingSpace::AcesCg`, `GradeSpace::AcesCct`, experimental gating switch (`FILMCRAFT_EXPERIMENTAL_ACES=1`), commands returning visible notices.
+- [x] **C2.5**: Utility transforms for sRGB/Rec.709 inputs into ACEScg, `GradeSpace::AcesCct` in WGSL and CPU with dynamic range parity, `InterimGamutCompression::ClipToAP1` with hue-shift characterization, scopes and export HDR gating.
+- [ ] **C2.6**: Camera IDTs to AP1 with explicit Bradford vs CAT02 decision recorded in an ADR, OCIO 2.6 oracle cross-check, test vectors.
+- [ ] **C2.8**: FilmCraft view output (display tone and gamut mapping fed from ACEScg) and end-to-end export test.
+
+### Stage B: Normative ACES 2.0 Output Transforms & RGC (Next Stage)
+- [ ] ACES 2.0 Output Transform constants verified against OCIO 2.6 built-in transforms.
+- [ ] ACES Reference Gamut Compression (RGC) parameter verification.
+- [ ] HDR PQ and HLG output presets in ACES mode.
+- [ ] Color Space Transform effect.
 
 ## Next
 
-- Item 6: C2.6 camera IDTs (Bradford vs CAT02 ADR, OCIO oracle cross-check, test vectors).
+- C2.6 (first half): Bradford vs CAT02 chromatic adaptation decision for camera IDTs, comparing full log-to-ACEScg transforms against OCIO 2.6 built-in transforms, documented in an ADR.
 
 ## C2.1 Pure-Rust ACES Core Completion Summary (2026-10-26)
 
