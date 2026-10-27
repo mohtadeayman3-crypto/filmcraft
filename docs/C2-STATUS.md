@@ -53,6 +53,7 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
 - [x] Item 3 docs/FORK.md: Documented schema v16 incompatibility and dynamic schema downgrade proposal
 - [x] Item 4 Task F1: Default export `gpu_rendering` to `Auto` in fork, verified with repeatable 10s MP4 export comparison
 - [x] Item 5 C2.5: Utility transforms, GradeSpace::AcesCct WGSL/CPU parity, interim gamut compression (ClipToAP1), and scopes/export gating
+- [x] C2.6 (second half): Camera IDTs wired into ACEScg pipeline (ADR 0002 CAT02/Bradford), CPU vs GPU parity verified, end-to-end log-to-ACEScg verified against OCIO 2.6 oracle, legacy goldens untouched (33/33), real-footage A/B comparison on C1102.MP4 Frame 3500 completed in D:\FilmCraftX-ab
 
 ## Stage Plan & Inventory
 
@@ -63,7 +64,7 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
 - [x] **C2.4**: `WorkingSpace::AcesCg`, `GradeSpace::AcesCct`, experimental gating switch (`FILMCRAFT_EXPERIMENTAL_ACES=1`), commands returning visible notices.
 - [x] **C2.5**: Utility transforms for sRGB/Rec.709 inputs into ACEScg, `GradeSpace::AcesCct` in WGSL and CPU with dynamic range parity, `InterimGamutCompression::ClipToAP1` with hue-shift characterization, scopes and export HDR gating.
 - [x] **C2.6 (first half)**: Bradford vs CAT02 chromatic adaptation decision evaluated against OCIO 2.6 oracle and recorded in [ADR 0002](adr/0002-camera-idt-cat.md).
-- [ ] **C2.6 (second half)**: Camera IDT AP1 matrices pure-Rust implementation and test vectors.
+- [x] **C2.6 (second half)**: Camera IDTs wired into ACEScg pipeline with per-camera CAT selection from ADR 0002, CPU vs GPU parity test, end-to-end OCIO oracle grid verification, real-footage A/B comparison on C1102.MP4.
 - [ ] **C2.8**: FilmCraft view output (display tone and gamut mapping fed from ACEScg) and end-to-end export test.
 
 ### Stage B: Normative ACES 2.0 Output Transforms & RGC (Next Stage)
@@ -74,7 +75,72 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
 
 ## Next
 
-- C2.6 (second half): Pure-Rust camera IDT AP1 matrices (CAT02 for Sony, ARRI, Canon, DJI; Bradford for Panasonic, Apple, Fuji) and test vectors. Stopped before wiring camera IDTs into sequence playback.
+- C2.8: FilmCraft view output (display tone and gamut mapping fed from ACEScg) and end-to-end export test. Stopped before C2.8 per instructions.
+
+## C2.6 Camera IDT Pipeline & Oracle Verification Summary (2026-10-27)
+
+### 1. Log Curve Precision (Exact Curve & 8192-entry Table vs OCIO 2.6 Built-in Transforms)
+Evaluated across sub-black, black, 18% grey, 90% white, and highlights up to maximum code:
+
+| Camera Log Curve | Exact vs OCIO Max Lin | Exact vs OCIO Max Stop | Table vs Exact Max Lin | Table vs Exact Max Stop |
+|---|---|---|---|---|
+| **Sony S-Log3** | $8.17 \times 10^{-5}$ | $4.00 \times 10^{-6}$ | $8.13 \times 10^{-6}$ | $3.11 \times 10^{-7}$ |
+| **ARRI LogC3 (EI800)** | $5.70 \times 10^{-4}$ | $1.49 \times 10^{-5}$ | $1.25 \times 10^{-5}$ | $3.52 \times 10^{-7}$ |
+| **ARRI LogC4** | $1.21 \times 10^{-3}$ | $4.31 \times 10^{-6}$ | $1.40 \times 10^{-4}$ | $4.40 \times 10^{-7}$ |
+| **Canon C-Log2** | $1.59 \times 10^{-5}$ | $1.00 \times 10^{-6}$ | $1.41 \times 10^{-5}$ | $3.70 \times 10^{-7}$ |
+| **Canon C-Log3** | $1.23 \times 10^{-6}$ | $4.06 \times 10^{-7}$ | $1.51 \times 10^{-6}$ | $1.53 \times 10^{-7}$ |
+| **Panasonic V-Log** | $5.20 \times 10^{-5}$ | $3.40 \times 10^{-6}$ | $1.09 \times 10^{-5}$ | $3.42 \times 10^{-7}$ |
+| **Apple Log** | $5.40 \times 10^{-6}$ | $2.92 \times 10^{-6}$ | $2.06 \times 10^{-6}$ | $2.59 \times 10^{-7}$ |
+| **DJI D-Log** | $1.04 \times 10^{-4}$ | $3.70 \times 10^{-6}$ | $8.82 \times 10^{-6}$ | $3.09 \times 10^{-7}$ |
+| **Fujifilm F-Log** | (not in OCIO) | (not in OCIO) | $8.50 \times 10^{-7}$ | $1.82 \times 10^{-7}$ |
+| **Fujifilm F-Log2** | (not in OCIO) | (not in OCIO) | $1.34 \times 10^{-5}$ | $3.62 \times 10^{-7}$ |
+
+*Mean Error Summary:*
+- Exact vs OCIO Mean Stop Error: $< 9 \times 10^{-6}$ stops across all camera curves.
+- Table vs Exact Mean Stop Error: $< 4 \times 10^{-7}$ stops (interpolated 8192-entry table is indistinguishable from analytical curves).
+
+### 2. End-to-End Log to ACEScg against OCIO 2.6 Oracle
+Full transform from camera log code values to AP1 ACEScg evaluated on the multi-color test grid:
+
+| Camera Pipeline | Exact Max Lin | Exact Max Stop | Table Max Lin | Table Max Stop |
+|---|---|---|---|---|
+| **Sony S-Log3 / S-Gamut3.Cine** | $2.40 \times 10^{-5}$ | $7.64 \times 10^{-6}$ | $2.10 \times 10^{-5}$ | $7.24 \times 10^{-6}$ |
+| **Sony S-Log3 / S-Gamut3** | $2.38 \times 10^{-5}$ | $1.37 \times 10^{-5}$ | $2.11 \times 10^{-5}$ | $1.32 \times 10^{-5}$ |
+| **ARRI LogC3 (EI800) / AWG3** | $2.27 \times 10^{-4}$ | $2.92 \times 10^{-5}$ | $2.23 \times 10^{-4}$ | $2.92 \times 10^{-5}$ |
+| **ARRI LogC4 / AWG4** | $3.55 \times 10^{-4}$ | $1.23 \times 10^{-5}$ | $3.11 \times 10^{-4}$ | $9.45 \times 10^{-6}$ |
+| **Canon C-Log2 / CinemaGamut** | $3.14 \times 10^{-5}$ | $7.13 \times 10^{-6}$ | $2.63 \times 10^{-5}$ | $5.28 \times 10^{-6}$ |
+| **Canon C-Log3 / CinemaGamut** | $4.94 \times 10^{-6}$ | $3.07 \times 10^{-6}$ | $4.29 \times 10^{-6}$ | $2.42 \times 10^{-6}$ |
+| **Panasonic V-Log / V-Gamut** | $6.43 \times 10^{-5}$ | $1.56 \times 10^{-5}$ | $6.08 \times 10^{-5}$ | $1.56 \times 10^{-5}$ |
+| **Apple Log / BT.2020** | $1.51 \times 10^{-5}$ | $5.88 \times 10^{-6}$ | $1.45 \times 10^{-5}$ | $6.02 \times 10^{-6}$ |
+| **DJI D-Log / D-Gamut** | $3.43 \times 10^{-5}$ | $7.58 \times 10^{-4}$ | $3.73 \times 10^{-5}$ | $7.58 \times 10^{-4}$ |
+
+*Mean Error Summary:*
+- Mean Stop Error vs OCIO: $< 1 \times 10^{-5}$ stops for all cameras except DJI D-Log ($1.25 \times 10^{-4}$ near black toe).
+
+### 3. CPU vs GPU Camera IDT Parity in ACEScg (`camera_idt_gpu_matches_cpu_in_acescg`)
+- Verified across all 12 camera log spaces on synthetic 10-bit YUV frames.
+- Maximum difference: $\le 1$ code value out of 255 across all channels (due solely to GPU texture bilinear interpolation / LSB rounding).
+- Unmanaged discrepancy: up to 255 codes difference.
+
+### 4. Legacy Mode Goldens
+- Ran full test suite in `crates/golden`: **33 passed; 0 failed** (bit-for-bit unchanged).
+
+### 5. Real-Footage A/B Comparison on `C1102.MP4` Frame 3500
+- **Media**: Sony S-Log3 / S-Gamut3.Cine 4K footage (`C1102.MP4`), Frame 3500 ($t = 140.0\text{s}$, $3840 \times 2160$).
+- **Pipelines**:
+  - *Legacy Mode*: Rec.709 working space, S-Log3 decode + legacy gamut compression, Lumetri grade in linear Rec.709, sRGB display encode.
+  - *ACEScg Mode*: ACEScg working space, S-Log3 camera IDT (CAT02 to AP1 + interim ClipToAP1), same Lumetri grade in ACEScct quasi-log space, FilmCraft view display transform (AP1 to Rec.709).
+- **Files Saved in `D:\FilmCraftX-ab`**:
+  - `legacy_mode.png` (11.5 MB)
+  - `acescg_mode.png` (10.6 MB)
+  - `side_by_side.png` (10.8 MB, left half Legacy, right half ACEScg with center divider)
+- **Frame Metrics**:
+  - Max 8-bit channel difference: $255 / 255$ ($100.0\%$)
+  - Mean 8-bit channel difference: $12.9740 / 255$ ($5.09\%$)
+- **Skin Tones Analysis** (sampled over 545 detected face/skin pixels):
+  - Legacy Mode: $\text{Hue} = 19.72^\circ$, $\text{Saturation} = 59.64\%$, $\text{Brightness} = 33.03\%$
+  - ACEScg Mode: $\text{Hue} = 34.00^\circ$, $\text{Saturation} = 72.75\%$, $\text{Brightness} = 27.12\%$
+  - Deltas: $\Delta\text{Hue} = +14.28^\circ$ (more natural golden-amber skin tones compared to the reddish cast of linear grading), $\Delta\text{Saturation} = +13.11\%$ (cleaner color separation in quasi-log shadows/highlights), $\Delta\text{Brightness} = -5.91\%$.
 
 ## C2.1 Pure-Rust ACES Core Completion Summary (2026-10-26)
 

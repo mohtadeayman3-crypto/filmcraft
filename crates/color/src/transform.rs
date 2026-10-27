@@ -215,6 +215,7 @@ pub struct InputTransform {
     hlg: Option<([f32; 3], f32)>,
     tone: Option<ToneMap>,
     compress: bool,
+    pub interim_clip: bool,
     /// Display-referred wide-gamut media (BT.2020 / P3 / HDR): desaturate into the working gamut
     /// with these luma weights instead of the camera-gamut compression.
     desaturate: Option<[f32; 3]>,
@@ -239,17 +240,19 @@ impl InputTransform {
         };
         let tone = (src.is_hdr() && !pipe.working.is_hdr() && pipe.auto_tone_map).then(|| ToneMap::new(peak, REFERENCE_WHITE_NITS));
         let wider = !identity_matrix && !gamut_within(src.gamut(), wg);
-        // camera gamuts (log media) get the soft compression; display gamuts keep their in-gamut
-        // colours exactly (BT.709 content in a BT.2020 file comes back unchanged)
-        let compress = wider && src.is_log();
+        let is_aces = pipe.working.is_aces();
+        // camera gamuts (log media) get the soft compression in legacy mode;
+        // in ACES mode, interim ClipToAP1 is used prior to verified RGC
+        let compress = !is_aces && wider && src.is_log();
+        let interim_clip = is_aces && wider && src.is_log();
         let l = wg.luma();
         let desaturate = (wider && !src.is_log()).then(|| [l[0] as f32, l[1] as f32, l[2] as f32]);
-        InputTransform { source: src, range, table: DecodeTable::for_curve(curve, range), matrix: to_f32(&m), identity_matrix, hlg, tone, compress, desaturate }
+        InputTransform { source: src, range, table: DecodeTable::for_curve(curve, range), matrix: to_f32(&m), identity_matrix, hlg, tone, compress, interim_clip, desaturate }
     }
 
     /// Whether anything happens after the per-channel table.
     pub fn has_pixel_stage(&self) -> bool {
-        !self.identity_matrix || self.hlg.is_some() || self.tone.is_some() || self.compress || self.desaturate.is_some()
+        !self.identity_matrix || self.hlg.is_some() || self.tone.is_some() || self.compress || self.interim_clip || self.desaturate.is_some()
     }
 
     /// The per-pixel stage (input: the table's output).
@@ -268,6 +271,9 @@ impl InputTransform {
         }
         if self.compress {
             c = gamut_compress(c);
+        }
+        if self.interim_clip {
+            c = InterimGamutCompression::ClipToAP1.compress(c);
         }
         if let Some(l) = self.desaturate {
             c = desaturate_into_gamut(c, l);
@@ -297,6 +303,7 @@ impl InputTransform {
             matrix: (!self.identity_matrix).then_some(self.matrix),
             tone: self.tone.as_ref().map(|t| (t.src_peak_nits as f32, t.dst_peak_nits as f32)),
             compress: self.compress,
+            interim_clip: self.interim_clip,
             desaturate: self.desaturate,
         })
     }
@@ -327,6 +334,8 @@ pub struct GpuInputParams {
     pub tone: Option<(f32, f32)>,
     /// Camera-gamut compression (`gamut_compress`) towards the achromatic axis.
     pub compress: bool,
+    /// Interim gamut compression in ACES mode (`InterimGamutCompression::ClipToAP1`).
+    pub interim_clip: bool,
     /// Luma weights to desaturate into the working gamut with ([`desaturate_into_gamut`]).
     pub desaturate: Option<[f32; 3]>,
 }
@@ -749,6 +758,64 @@ mod tests {
             let out_tf = OutputTransform::display(&aces_pipe);
             let disp = out_tf.apply(c_clipped);
             assert!(disp.iter().all(|&v| v >= 0.0 && v.is_finite()), "{name}: display mapping must produce non-negative values: {disp:?}");
+        }
+    }
+
+    #[test]
+    fn camera_idts_match_ocio_oracle_on_grid() {
+        let aces_pipe = ColorPipeline { working: WorkingSpace::AcesCg, wide_gamut: false, auto_tone_map: false };
+
+        // 1. Sony S-Log3 / S-Gamut3.Cine (CAT02 per ADR 0002)
+        // Evaluated against OCIO 2.6 built-in transform 'S-Log3 S-Gamut3.Cine' -> 'ACEScg'
+        let tf_sony = InputTransform::new(ColorSpace::SLog3SGamut3Cine, Range::Full, &aces_pipe, None);
+        // 18% grey: code 0.410557 -> AP1 [0.18, 0.18, 0.18]
+        let g18 = tf_sony.convert([0.410557, 0.410557, 0.410557]);
+        for ch in 0..3 {
+            assert!((g18[ch] - 0.18).abs() < 1e-4, "Sony 18% grey ch {ch}: {}", g18[ch]);
+        }
+        // Black: code 0.092864 -> AP1 [0.0, 0.0, 0.0]
+        let blk = tf_sony.convert([0.092864, 0.092864, 0.092864]);
+        for ch in 0..3 {
+            assert!(blk[ch].abs() < 1e-4, "Sony black ch {ch}: {}", blk[ch]);
+        }
+        // Skin tone in S-Log3: [0.45, 0.38, 0.32] -> OCIO: [0.2574606, 0.14059219, 0.06761081]
+        let skin = tf_sony.convert([0.45, 0.38, 0.32]);
+        let want_skin = [0.2574606, 0.14059219, 0.06761081];
+        for ch in 0..3 {
+            assert!((skin[ch] - want_skin[ch]).abs() < 1e-5, "Sony skin ch {ch}: {} vs want {}", skin[ch], want_skin[ch]);
+        }
+
+        // 2. ARRI LogC3 / AWG3 (CAT02 per ADR 0002)
+        let tf_logc3 = InputTransform::new(ColorSpace::LogC3Awg3, Range::Full, &aces_pipe, None);
+        // 18% grey: code 0.391007 -> AP1 [0.18, 0.18, 0.18]
+        let g18_c3 = tf_logc3.convert([0.391007, 0.391007, 0.391007]);
+        for ch in 0..3 {
+            assert!((g18_c3[ch] - 0.18).abs() < 1e-4, "LogC3 18% grey ch {ch}: {}", g18_c3[ch]);
+        }
+
+        // 3. ARRI LogC4 / AWG4 (CAT02 per ADR 0002)
+        let tf_logc4 = InputTransform::new(ColorSpace::LogC4Awg4, Range::Full, &aces_pipe, None);
+        // 18% grey: code 0.278396 -> AP1 [0.18, 0.18, 0.18]
+        let g18_c4 = tf_logc4.convert([0.278396, 0.278396, 0.278396]);
+        for ch in 0..3 {
+            assert!((g18_c4[ch] - 0.18).abs() < 1e-4, "LogC4 18% grey ch {ch}: {}", g18_c4[ch]);
+        }
+
+        // 4. Panasonic V-Log / V-Gamut (Bradford per ADR 0002)
+        let tf_vlog = InputTransform::new(ColorSpace::VLogVGamut, Range::Full, &aces_pipe, None);
+        // 18% grey: code 0.423311 -> AP1 [0.18, 0.18, 0.18]
+        let g18_vlog = tf_vlog.convert([0.423311, 0.423311, 0.423311]);
+        for ch in 0..3 {
+            assert!((g18_vlog[ch] - 0.18).abs() < 1e-4, "V-Log 18% grey ch {ch}: {}", g18_vlog[ch]);
+        }
+
+        // 5. Apple Log / BT.2020 (Bradford per ADR 0002)
+        // Apple Log is specified in IRE (Domain::Ire, Range::Limited video levels 64..940)
+        let tf_apple = InputTransform::new(ColorSpace::AppleLog, Range::Limited, &aces_pipe, None);
+        // 18% grey: 48.8% IRE (code 0.488272) -> AP1 [0.18, 0.18, 0.18]
+        let g18_apple = tf_apple.convert([0.488272, 0.488272, 0.488272]);
+        for ch in 0..3 {
+            assert!((g18_apple[ch] - 0.18).abs() < 1e-4, "Apple Log 18% grey ch {ch}: {}", g18_apple[ch]);
         }
     }
 }

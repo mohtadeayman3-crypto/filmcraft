@@ -14,7 +14,7 @@ struct U {
     p0: vec4<f32>,   // opacity, kind (0 rgba8 srgb straight, 1 rgba16f premul linear, 2 yuv), taps, transfer (0 srgb, 1 linear, 2 pq, 3 hlg)
     p1: vec4<f32>,   // y_off y_scale c_off c_scale (code units)
     p2: vec4<f32>,   // kr kb code_scale footprint
-    p3: vec4<f32>,   // blend mode, alpha-plane scale (0: none), effect-source integer decimation, gamut_compress on (1.0) / off (0.0)
+    p3: vec4<f32>,   // blend mode, alpha-plane scale (0: none), effect-source integer decimation, gamut_compress (1.0) / interim_clip (2.0) / off (0.0)
     // Colour management of HDR / wide-gamut / log Y'CbCr (`filmcraft_color::InputTransform`, #965):
     q0: vec4<f32>,   // on, curve (0 sdr, 1 linear, 2 pq, 3 hlg, 4 log), HLG OOTF scale (0: none), reference white cd/m²
     q1: vec4<f32>,   // HLG OOTF luma weights, gamut matrix on
@@ -202,7 +202,9 @@ fn managed(rgb: vec3<f32>) -> vec3<f32> {
             c = c * k;
         }
     }
-    if u.p3.w > 0.5 {
+    if u.p3.w > 1.5 {
+        c = max(c, vec3(0.0));
+    } else if u.p3.w > 0.5 {
         c = gamut_compress(c);
     }
     if u.q5.w > 0.5 {

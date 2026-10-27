@@ -38,6 +38,21 @@ pub const BRADFORD: Mat3 = [
     [0.0389, -0.0685, 1.0296],
 ];
 
+/// CAT02 cone response matrix (M_CAT02).
+/// Source: Luo, Li, & R.W.G. Hunt (2002); CIECAM02.
+pub const CAT02: Mat3 = [
+    [0.7328, 0.4296, -0.1624],
+    [-0.7036, 1.6975, 0.0061],
+    [0.0030, 0.0136, 0.9834],
+];
+
+/// Chromatic adaptation transform model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cat {
+    Bradford,
+    Cat02,
+}
+
 /// ACEScct constants.
 /// Source: AMPAS S-2016-001.
 pub const ACESCCT_X_BRK: f64 = 0.0078125;
@@ -48,24 +63,39 @@ pub const ACESCCT_B: f64 = 0.0729055341958355;
 /// Half-float maximum value (65504.0), clamped by ACEScc and ACEScct decode.
 pub const HALF_MAX: f64 = 65504.0;
 
-/// Compute the Bradford chromatic adaptation transform (CAT) matrix from `src_white` to `dst_white`.
+/// Compute the chromatic adaptation transform (CAT) matrix from `src_white` to `dst_white`.
 ///
+/// Uses Bradford or CAT02 cone response matrix according to `cat`.
 /// Returns the 3×3 matrix such that `XYZ_dst = CAT · XYZ_src`.
 /// When white points match within 1e-9, returns the identity matrix.
-pub fn bradford_cat(src_white: [f64; 2], dst_white: [f64; 2]) -> Mat3 {
+pub fn cat(cat: Cat, src_white: [f64; 2], dst_white: [f64; 2]) -> Mat3 {
     if (src_white[0] - dst_white[0]).abs() < 1e-9 && (src_white[1] - dst_white[1]).abs() < 1e-9 {
         return spaces::IDENTITY;
     }
+    let m = match cat {
+        Cat::Bradford => &BRADFORD,
+        Cat::Cat02 => &CAT02,
+    };
     let to_xyz = |c: [f64; 2]| [c[0] / c[1], 1.0, (1.0 - c[0] - c[1]) / c[1]];
-    let ws = mul_vec(&BRADFORD, to_xyz(src_white));
-    let wd = mul_vec(&BRADFORD, to_xyz(dst_white));
+    let ws = mul_vec(m, to_xyz(src_white));
+    let wd = mul_vec(m, to_xyz(dst_white));
     let diag: Mat3 = [
         [wd[0] / ws[0], 0.0, 0.0],
         [0.0, wd[1] / ws[1], 0.0],
         [0.0, 0.0, wd[2] / ws[2]],
     ];
-    let inv_b = inverse(&BRADFORD);
-    mul(&inv_b, &mul(&diag, &BRADFORD))
+    let inv_m = inverse(m);
+    mul(&inv_m, &mul(&diag, m))
+}
+
+/// Compute the Bradford chromatic adaptation transform (CAT) matrix from `src_white` to `dst_white`.
+pub fn bradford_cat(src_white: [f64; 2], dst_white: [f64; 2]) -> Mat3 {
+    cat(Cat::Bradford, src_white, dst_white)
+}
+
+/// Compute the CAT02 chromatic adaptation transform (CAT) matrix from `src_white` to `dst_white`.
+pub fn cat02_cat(src_white: [f64; 2], dst_white: [f64; 2]) -> Mat3 {
+    cat(Cat::Cat02, src_white, dst_white)
 }
 
 /// Derive the AP0 → CIE XYZ normalised primary matrix from published chromaticities and white point.
@@ -394,6 +424,20 @@ pub(crate) mod tests {
         // Inverting white points inverts the matrix
         let fwd = bradford_cat(d65, ACES_WHITE);
         let rev = bradford_cat(ACES_WHITE, d65);
+        let roundtrip = mul(&fwd, &rev);
+        assert!(mat_max_diff(&roundtrip, &spaces::IDENTITY) < 1e-12);
+    }
+
+    #[test]
+    fn cat02_cat_properties() {
+        // Identity when source and destination whites match
+        let d65 = spaces::D65;
+        assert!(mat_max_diff(&cat02_cat(d65, d65), &spaces::IDENTITY) < 1e-12);
+        assert!(mat_max_diff(&cat02_cat(ACES_WHITE, ACES_WHITE), &spaces::IDENTITY) < 1e-12);
+
+        // Inverting white points inverts the matrix
+        let fwd = cat02_cat(d65, ACES_WHITE);
+        let rev = cat02_cat(ACES_WHITE, d65);
         let roundtrip = mul(&fwd, &rev);
         assert!(mat_max_diff(&roundtrip, &spaces::IDENTITY) < 1e-12);
     }

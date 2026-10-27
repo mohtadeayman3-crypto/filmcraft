@@ -89,6 +89,23 @@ impl Gamut {
     pub fn luma(self) -> [f64; 3] {
         self.to_xyz()[1]
     }
+
+    /// Chromatic adaptation transform to use when adapting to/from ACES white (AP0 / AP1).
+    ///
+    /// Per ADR 0002:
+    /// - CAT02 for Sony, ARRI, Canon, and DJI (matches OCIO 2.6 built-in transforms to 1e-7).
+    /// - Bradford for Panasonic V-Gamut, BT.2020 (Apple Log, Fujifilm F-Log), and display gamuts.
+    pub fn cat_for_aces(self) -> crate::aces::Cat {
+        match self {
+            Gamut::SGamut3
+            | Gamut::SGamut3Cine
+            | Gamut::Awg3
+            | Gamut::Awg4
+            | Gamut::CinemaGamut
+            | Gamut::DGamut => crate::aces::Cat::Cat02,
+            _ => crate::aces::Cat::Bradford,
+        }
+    }
 }
 
 /// Normalised primary matrix (SMPTE RP 177).
@@ -130,8 +147,9 @@ pub const IDENTITY: Mat3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 /// Linear RGB in `src` → linear RGB in `dst`.
 ///
 /// When the source and destination share the same white point (e.g. D65 ↔ D65), this is the direct
-/// `NPM_dst⁻¹ · NPM_src` product. When white points differ (e.g. D65 ↔ ACES white ≈ D60), a Bradford
-/// chromatic adaptation transform is inserted: `NPM_dst⁻¹ · CAT(src_white → dst_white) · NPM_src`.
+/// `NPM_dst⁻¹ · NPM_src` product. When white points differ (e.g. D65 ↔ ACES white ≈ D60), a chromatic
+/// adaptation transform is inserted: `NPM_dst⁻¹ · CAT(src_white → dst_white) · NPM_src`, using the
+/// camera's verified CAT per ADR 0002 (CAT02 for Sony, ARRI, Canon, DJI; Bradford for Panasonic, BT.2020, display).
 pub fn gamut_matrix(src: Gamut, dst: Gamut) -> Mat3 {
     if src == dst {
         return IDENTITY;
@@ -139,7 +157,14 @@ pub fn gamut_matrix(src: Gamut, dst: Gamut) -> Mat3 {
     if src.white() == dst.white() {
         mul(&inverse(&dst.to_xyz()), &src.to_xyz())
     } else {
-        let cat = crate::aces::bradford_cat(src.white(), dst.white());
+        let cat_type = if src == Gamut::Ap0 || src == Gamut::Ap1 {
+            dst.cat_for_aces()
+        } else if dst == Gamut::Ap0 || dst == Gamut::Ap1 {
+            src.cat_for_aces()
+        } else {
+            crate::aces::Cat::Bradford
+        };
+        let cat = crate::aces::cat(cat_type, src.white(), dst.white());
         mul(&inverse(&dst.to_xyz()), &mul(&cat, &src.to_xyz()))
     }
 }

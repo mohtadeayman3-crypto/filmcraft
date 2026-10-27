@@ -686,7 +686,15 @@ impl GpuCompositor {
             ];
             q
         });
-        let compress = src.input.map_or(0.0, |p| if p.compress { 1.0 } else { 0.0 });
+        let compress = src.input.map_or(0.0, |p| {
+            if p.interim_clip {
+                2.0
+            } else if p.compress {
+                1.0
+            } else {
+                0.0
+            }
+        });
         let base = [
             m.a as f32,
             m.b as f32,

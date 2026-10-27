@@ -605,6 +605,61 @@ fn log_input_gpu_matches_cpu() {
     }
 }
 
+/// Camera log Y'CbCr on an ACEScg sequence (C2.6): the shader's camera IDT (curve decode table,
+/// ADR 0002 CAT02/Bradford gamut matrix, and interim AP1 clip) matches the CPU reference running
+/// the same `InputTransform` within 2 codes (texture filtering / LSB rounding).
+#[test]
+fn camera_idt_gpu_matches_cpu_in_acescg() {
+    use filmcraft_color::{ColorInfo, ColorPipeline, ColorSpace, InputTransform, Matrix, Primaries, Range, Transfer, WorkingSpace};
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (256u32, 6u32);
+    let chroma = [(512, 512), (300, 760), (760, 300), (64, 512), (960, 960), (512, 64)];
+    let y: Vec<u16> = (0..h).flat_map(|_| (0..w).map(|x| (64 + x * 876 / 255) as u16)).collect();
+    let cb: Vec<u16> = (0..h).flat_map(|r| std::iter::repeat_n(chroma[r as usize].0, w as usize)).collect();
+    let cr: Vec<u16> = (0..h).flat_map(|r| std::iter::repeat_n(chroma[r as usize].1, w as usize)).collect();
+    let data = PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(cb), Arc::new(cr)], chroma: Chroma::C444, bits: 10, alpha: None };
+    let color = ColorInfo { matrix: Matrix::Bt709, transfer: Transfer::Bt709, primaries: Primaries::Bt709, range: Range::Limited };
+    let log_spaces = [
+        ColorSpace::SLog3SGamut3Cine,
+        ColorSpace::SLog3SGamut3,
+        ColorSpace::VLogVGamut,
+        ColorSpace::CLog2CinemaGamut,
+        ColorSpace::CLog3CinemaGamut,
+        ColorSpace::LogC3Awg3,
+        ColorSpace::LogC4Awg4,
+        ColorSpace::AppleLog,
+        ColorSpace::DLogDGamut,
+        ColorSpace::FLogFGamut,
+        ColorSpace::FLog2FGamut,
+        ColorSpace::FLog2CFGamutC,
+    ];
+    let aces_pipe = ColorPipeline { working: WorkingSpace::AcesCg, wide_gamut: false, auto_tone_map: false };
+    for cs in log_spaces {
+        let frame = Arc::new(VideoFrame { width: w, height: h, data: data.clone(), color, par: (1, 1), pts: Default::default() });
+        let t = Arc::new(InputTransform::new(cs, Range::Limited, &aces_pipe, None));
+        let params = t.gpu_params().expect("gpu_params must be Some for log curves");
+        assert!(matches!(params.curve, filmcraft_color::GpuCurve::Log(..)));
+        assert!(params.matrix.is_some(), "camera IDT to AP1 must have a gamut matrix");
+        let layer = PlanLayer { input: Some(t), ..PlanLayer::new(frame.clone(), Affine::IDENTITY, 1.0, Blend::Normal) };
+        let plan = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![layer] };
+        let cpu = execute_cpu(&plan).over_black_rgba8();
+        c.composite(&plan);
+        let (_, _, gpu) = c.read_output().expect("readback");
+        let error = cpu.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+        let plain = FramePlan::Layers { width: w as usize, height: h as usize, layers: vec![PlanLayer::new(frame, Affine::IDENTITY, 1.0, Blend::Normal)] };
+        c.composite(&plain);
+        let (_, _, unmanaged) = c.read_output().expect("readback");
+        let apart = cpu.iter().zip(&unmanaged).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+        eprintln!("{cs:?} in ACEScg: max error {error}, unmanaged differs by up to {apart}");
+        assert!(error <= 2, "{cs:?} in ACEScg: GPU differs from the CPU by up to {error} codes");
+        assert!(apart > 20, "{cs:?} in ACEScg: colour management changed nothing ({apart})");
+    }
+}
+
 /// Empirical determination of 4:2:0 chroma siting sign and magnitude (C2 follow-up):
 /// In MPEG-2 / Rec.709 / H.264 / H.265 (Type 0 left-sited chroma), chroma sample i is horizontally
 /// collocated with even luma column 2i. In a continuous linear reconstruction:

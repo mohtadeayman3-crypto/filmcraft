@@ -14,7 +14,7 @@ An IDT performs:
 All camera gamuts are defined with a standard white point (D65: $x=0.3127, y=0.3290$, or D55 for Canon daylight), whereas ACES AP0 (SMPTE ST 2065-1) and AP1 (AMPAS S-2014-004) use the ACES white point ($x=0.32168, y=0.33767$). Therefore, deriving the $3 \times 3$ transformation matrix mathematically requires a Chromatic Adaptation Transform (CAT) between the camera white point and ACES white.
 
 Two chromatic adaptation models are prevalent in digital cinema and color science:
-1. **CAT02**: Luo, Li, & R.W.G. Hunt (2002); the chromatic adaptation matrix developed for CIECAM02 and specified normatively in **AMPAS S-2014-004 §4.3**.
+1. **CAT02**: Luo, Li, & R.W.G. Hunt (2002); the chromatic adaptation matrix developed for CIECAM02.
 2. **Bradford (BFD)**: K. M. Lam (1985); the standard CAT specified in ICC.1 Annex E and commonly used in ICC workflow transforms.
 
 We evaluated both CAT models against the external reference oracle **OpenColorIO 2.6.0** (`studio-config-v5.0.0_aces-v2.1_ocio-v2.6` in `D:\FilmCraftX-tools`) across a test grid of 17 colors (neutrals from 0.0 to 1.0 including 18% grey, Caucasian, Asian, and Dark skin tones, saturated primaries and secondaries, and synthetic out-of-gamut neon/laser colors).
@@ -33,17 +33,18 @@ We evaluated both CAT models against the external reference oracle **OpenColorIO
 | **Fujifilm (Rec. 2020)** | **$1.52 \times 10^{-7}$** | **$2.98 \times 10^{-8}$** | $3.90 \times 10^{-3}$ | $1.36 \times 10^{-3}$ | **Bradford** ($\sim 25,000\times$ lower) |
 
 ### Key Findings:
-1. **Sony, ARRI, Canon, and DJI** authored their official ACES IDT matrices strictly adhering to **AMPAS S-2014-004 §4.3**, which mandates **CAT02**. For these cameras, CAT02 matches the OCIO 2.6 oracle to machine precision ($< 2 \times 10^{-7}$), whereas Bradford introduces systematic errors exceeding $0.5\%$.
-2. **Panasonic V-Gamut and ITU-R BT.2020 (Apple Log and Fujifilm F-Log)** in the Academy's reference repository (`aces-dev`) and OCIO were historically authored using **Bradford CAT** (the ICC standard). For these spaces, Bradford matches OCIO 2.6 to machine precision ($< 2 \times 10^{-7}$), whereas CAT02 introduces $\sim 0.4\%$ error.
-3. Imposing a single global CAT across all cameras would inevitably create noticeable color discrepancy against external VFX facilities and NLEs conforming to either standard.
+1. **Sony, ARRI, Canon, and DJI**: CAT02 matches the OCIO 2.6 built-in transforms to machine precision ($< 2 \times 10^{-7}$), whereas Bradford introduces systematic errors of $\sim 0.5\%$.
+2. **Panasonic V-Gamut and ITU-R BT.2020 (Apple Log and Fujifilm F-Log)**: Bradford matches the OCIO 2.6 built-in transforms to machine precision ($< 2 \times 10^{-7}$), whereas CAT02 introduces $\sim 0.4\%$ error.
+3. Imposing a single global CAT across all cameras would create discrepancy against OCIO 2.6 and established color pipelines.
 
 ## Decision
 
-1. **Camera-Standard Adaptive CAT:**
-   FilmCraft will select the chromatic adaptation transform corresponding to the authoritative standard used by the manufacturer and Academy IDT:
+Chosen empirically: matches OCIO 2.6 built-ins to $10^{-7}$; the vendors' stated rationale was not verified.
+
+1. **Per-Camera Empirical CAT Selection:**
    - **CAT02**: Sony (`SGamut3`, `SGamut3Cine`), ARRI (`Awg3`, `Awg4`), Canon (`CinemaGamut`), DJI (`DGamut`).
-   - **Bradford**: Panasonic (`VGamut`), ITU-R BT.2020 cameras (`Apple Log`, Fujifilm `F-Log`), and general display gamuts (Rec.709, P3-D65).
+   - **Bradford**: Panasonic (`VGamut`), ITU-R BT.2020 camera formats (`Apple Log`, Fujifilm `F-Log`), and general display gamuts (Rec.709, P3-D65).
 2. **Pure Derivation:**
-   All transformation matrices will be derived directly in pure Rust via Normalized Primary Matrix (SMPTE RP 177) combined with the selected CAT matrix, avoiding hardcoded "magic constants" and ensuring verifiable agreement with the OCIO 2.6 oracle within IEEE 754 rounding limits.
-3. **No IDT Wiring Yet:**
-   As instructed, this ADR establishes the decision and verifies mathematical constants prior to pipeline integration. No camera IDTs are enabled in sequence playback until C2.6 completion.
+   All transformation matrices will be derived directly in pure Rust via Normalized Primary Matrix (SMPTE RP 177) combined with the selected CAT matrix, avoiding hardcoded "magic constants" and ensuring verifiable agreement with the OCIO 2.6 oracle within IEEE 754 rounding limits ($\le 10^{-7}$).
+3. **Pipeline Wiring:**
+   The camera IDTs will be wired into the ACEScg working pipeline (C2.6 second half) with tests confirming CPU and GPU parity against the OCIO oracle.
