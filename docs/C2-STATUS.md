@@ -62,7 +62,8 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
 - [x] **C2.3**: Baseline golden hashes & project schema bump (`SCHEMA_VERSION = 16`).
 - [x] **C2.4**: `WorkingSpace::AcesCg`, `GradeSpace::AcesCct`, experimental gating switch (`FILMCRAFT_EXPERIMENTAL_ACES=1`), commands returning visible notices.
 - [x] **C2.5**: Utility transforms for sRGB/Rec.709 inputs into ACEScg, `GradeSpace::AcesCct` in WGSL and CPU with dynamic range parity, `InterimGamutCompression::ClipToAP1` with hue-shift characterization, scopes and export HDR gating.
-- [ ] **C2.6**: Camera IDTs to AP1 with explicit Bradford vs CAT02 decision recorded in an ADR, OCIO 2.6 oracle cross-check, test vectors.
+- [x] **C2.6 (first half)**: Bradford vs CAT02 chromatic adaptation decision evaluated against OCIO 2.6 oracle and recorded in [ADR 0002](adr/0002-camera-idt-cat.md).
+- [ ] **C2.6 (second half)**: Camera IDT AP1 matrices pure-Rust implementation and test vectors.
 - [ ] **C2.8**: FilmCraft view output (display tone and gamut mapping fed from ACEScg) and end-to-end export test.
 
 ### Stage B: Normative ACES 2.0 Output Transforms & RGC (Next Stage)
@@ -73,7 +74,7 @@ Phase 1 (design only, no code changes). Design document: [`C2-DESIGN.md`](C2-DES
 
 ## Next
 
-- C2.6 (first half): Bradford vs CAT02 chromatic adaptation decision for camera IDTs, comparing full log-to-ACEScg transforms against OCIO 2.6 built-in transforms, documented in an ADR.
+- C2.6 (second half): Pure-Rust camera IDT AP1 matrices (CAT02 for Sony, ARRI, Canon, DJI; Bradford for Panasonic, Apple, Fuji) and test vectors. Stopped before wiring camera IDTs into sequence playback.
 
 ## C2.1 Pure-Rust ACES Core Completion Summary (2026-10-26)
 
